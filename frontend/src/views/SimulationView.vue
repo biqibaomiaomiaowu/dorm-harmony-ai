@@ -23,11 +23,11 @@ import {
 
 const scenarioButtons = simulationScenarios
 const defaultScene = defaultSimulationRequest.scenario
-const defaultSpeech = defaultSimulationRequest.user_message
+const defaultSpeechPlaceholder = `例：${defaultSimulationRequest.user_message}`
 const designPreview = buildDemoSimulationResponse('设计稿首屏示例')
 
 const currentScene = ref(defaultScene)
-const userMessage = ref(defaultSpeech)
+const userMessage = ref('')
 const isSubmitting = ref(false)
 const submitError = ref('')
 const isDemoResult = ref(false)
@@ -154,7 +154,7 @@ function buildRequestContext() {
 
 function setDefaultSimulationState() {
   currentScene.value = defaultScene
-  userMessage.value = defaultSpeech
+  userMessage.value = ''
   replies.value = [...designPreview.replies]
   conversationMessages.value = []
   generationStatus.value = ''
@@ -242,7 +242,7 @@ function hydrateFromSimulationCache() {
 
     if (isStoredSimulationResult(parsed)) {
       currentScene.value = parsed.request.scenario || defaultScene
-      userMessage.value = parsed.request.user_message || defaultSpeech
+      userMessage.value = parsed.request.user_message || ''
       replies.value = [...parsed.response.replies]
       conversationMessages.value = parsed.dialogue ? [...parsed.dialogue] : []
       isDemoResult.value = parsed.response.is_demo
@@ -615,7 +615,7 @@ function resetConversation() {
           <div class="comm-input-wrap">
             <input
               v-model="userMessage"
-              placeholder="输入你的回复..."
+              :placeholder="defaultSpeechPlaceholder"
               type="text"
               :disabled="isSubmitting"
               aria-label="输入你的回复"

@@ -10,11 +10,21 @@ from app.safety import SAFETY_DISCLAIMER
 from app.schemas import (
     AnalyzeRiskLevel,
     ArchiveAnalysisResponse,
-    EventFrequency,
     EventRecord,
+    EventType,
     SourceBreakdown,
 )
-from app.scoring import EVENT_SOURCE_LABELS, FREQUENCY_SCORES, analyze_pressure
+from app.scoring import analyze_pressure
+
+
+ARCHIVE_EVENT_TYPE_LABELS: dict[EventType, str] = {
+    EventType.NOISE: "噪音冲突",
+    EventType.SCHEDULE: "作息冲突",
+    EventType.HYGIENE: "卫生冲突",
+    EventType.COST: "费用冲突",
+    EventType.PRIVACY: "隐私边界",
+    EventType.EMOTION: "情绪冲突",
+}
 
 
 def analyze_archive_pressure(
@@ -66,21 +76,10 @@ def analyze_archive_pressure(
             if keyword not in emotion_keywords
         )
 
-        source_label = EVENT_SOURCE_LABELS[event.event_type]
+        source_label = ARCHIVE_EVENT_TYPE_LABELS[event.event_type]
         source_contributions[source_label] += (
-            single_analysis.pressure_score * recency_weight * 0.55
+            single_analysis.pressure_score * recency_weight
         )
-        if event.frequency in {
-            EventFrequency.WEEKLY_MULTIPLE,
-            EventFrequency.DAILY,
-        }:
-            source_contributions["发生频率较高"] += (
-                FREQUENCY_SCORES[event.frequency] * recency_weight * 0.20
-            )
-        if not event.has_communicated:
-            source_contributions["尚未有效沟通"] += 100 * recency_weight * 0.15
-        if event.has_conflict:
-            source_contributions["已出现争吵或冷战"] += 100 * recency_weight * 0.10
 
     weighted_average = weighted_score_sum / max(weight_sum, 1.0)
     accumulation_bonus = min(15, round(5 * log(1 + max(active_30d_count - 1, 0))))
@@ -140,19 +139,23 @@ def _risk_for_public_score(score: int) -> tuple[AnalyzeRiskLevel, str]:
 
 
 def _source_breakdown(contributions: dict[str, float]) -> list[SourceBreakdown]:
-    """把压力来源贡献值转换为前三项百分比拆解。"""
-    top_sources = sorted(
-        contributions.items(),
+    """把所有正贡献事件类型转换为百分比拆解。"""
+    returned_sources = sorted(
+        (
+            (label, contribution)
+            for label, contribution in contributions.items()
+            if contribution > 0
+        ),
         key=lambda item: item[1],
         reverse=True,
-    )[:3]
-    if not top_sources:
+    )
+    if not returned_sources:
         return []
 
-    total = sum(contribution for _, contribution in top_sources)
+    total = sum(contribution for _, contribution in returned_sources)
     rounded_percents = [
         round(contribution / total * 100)
-        for _, contribution in top_sources
+        for _, contribution in returned_sources
     ]
     percent_delta = 100 - sum(rounded_percents)
     rounded_percents[0] += percent_delta
@@ -163,7 +166,7 @@ def _source_breakdown(contributions: dict[str, float]) -> list[SourceBreakdown]:
             percent=percent,
             contribution=contribution,
         )
-        for (label, contribution), percent in zip(top_sources, rounded_percents)
+        for (label, contribution), percent in zip(returned_sources, rounded_percents)
     ]
 
 

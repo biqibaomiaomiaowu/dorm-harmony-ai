@@ -35,6 +35,26 @@ function requireExcludes(relativePath, phrases) {
   }
 }
 
+function requireNoMatches(relativePath, checks) {
+  const content = read(relativePath)
+
+  for (const { label, pattern } of checks) {
+    if (pattern.test(content)) {
+      failures.push(`${relativePath} should not match ${label}`)
+    }
+  }
+}
+
+function requireMatches(relativePath, checks) {
+  const content = read(relativePath)
+
+  for (const { label, pattern } of checks) {
+    if (!pattern.test(content)) {
+      failures.push(`${relativePath} should match ${label}`)
+    }
+  }
+}
+
 requireIncludes('package.json', ['"verify:v2": "node scripts/verify-v2.mjs"'])
 
 requireIncludes('src/router/index.ts', [
@@ -49,7 +69,12 @@ requireIncludes('src/views/RecordView.vue', [
   'event_date',
   '事件日期',
   'createEventRecord',
+  "description: ''",
+  'const descriptionPlaceholder =',
+  '例：',
+  ':placeholder="descriptionPlaceholder"',
 ])
+requireExcludes('src/views/RecordView.vue', ['placeholder="写下当时的具体情况..."'])
 
 requireIncludes('src/views/EventArchiveView.vue', [
   '事件档案',
@@ -83,21 +108,152 @@ requireIncludes('src/views/AnalysisView.vue', [
   'fetchArchiveAnalysis',
   'fetchArchiveInsight',
   'source_breakdown',
+  'animatedScorePercent',
+  'animatedSourcePercents',
+  'requestAnimationFrame',
+  'isAnalysisViewActive',
+  'typeof window.matchMedia !== \'function\'',
+  "matchMedia('(prefers-reduced-motion: reduce)')",
   'AI 心晴见解',
   '事件档案',
 ])
-requireExcludes('src/views/AnalysisView.vue', ['Math.floor(100 / labels.length)'])
+requireExcludes('src/views/AnalysisView.vue', [
+  'Math.floor(100 / labels.length)',
+  '暂无来源',
+  '<strong>{{ normalizedScore }}</strong>',
+])
+requireMatches('src/views/AnalysisView.vue', [
+  {
+    label: 'score core displays animatedScorePercent',
+    pattern: /<strong>\s*\{\{\s*animatedScorePercent\s*\}\}\s*<\/strong>/,
+  },
+  {
+    label: 'loadArchiveAnalysis exits before animating after unmount',
+    pattern:
+      /await nextTick\(\)[\s\S]*?if \(!isAnalysisViewActive\) \{[\s\S]*?return[\s\S]*?\}[\s\S]*?animateAnalysisProgress\(\)/,
+  },
+  {
+    label: 'animation step stops when view is inactive',
+    pattern:
+      /const step = \(currentTime: number\) => \{[\s\S]*?if \(!isAnalysisViewActive\) \{[\s\S]*?return[\s\S]*?\}/,
+  },
+  {
+    label: 'unmount cancels animation and marks inactive',
+    pattern:
+      /onBeforeUnmount\(\(\) => \{[\s\S]*?isAnalysisViewActive = false[\s\S]*?cancelAnimationFrame\(analysisAnimationFrame\)/,
+  },
+])
 
 requireIncludes('src/views/SimulationView.vue', [
   'conversationMessages',
   'appendReplyWithDelay',
   'replyDelayMs',
   'dialogue',
+  'const defaultSpeechPlaceholder =',
+  'const userMessage = ref(\'\')',
+  "userMessage.value = ''",
+  ':placeholder="defaultSpeechPlaceholder"',
   '正在生成',
 ])
-requireExcludes('src/views/SimulationView.vue', ['replies.value = result.replies'])
+requireExcludes('src/views/SimulationView.vue', [
+  'replies.value = result.replies',
+  'const userMessage = ref(defaultSpeech)',
+  'userMessage.value = defaultSpeech',
+  'parsed.request.user_message || defaultSpeech',
+])
 
-requireIncludes('src/views/ReviewView.vue', ['storedDialogue', '完整对话'])
+requireIncludes('src/views/ReviewView.vue', [
+  'storedDialogue',
+  '完整对话',
+  'performance_scores',
+  'latestUserMessage',
+  '暂无本轮用户输入',
+  'reviewResponse.value.performance_scores.clarity',
+  'reviewResponse.value.performance_scores.empathy',
+  'reviewResponse.value.performance_scores.resolution',
+])
+requireExcludes('src/views/ReviewView.vue', [
+  'const scoreFallback',
+  'rewriteSuggestion.instead }}',
+  'reviewResponse.value.risks.length',
+  'reviewResponse.value.strengths.length',
+])
+requireNoMatches('src/views/ReviewView.vue', [
+  {
+    label: 'latestUserMessage falling back to defaultRewriteSuggestion.instead',
+    pattern:
+      /const latestUserMessage = computed\(\(\) => \{[\s\S]*?defaultRewriteSuggestion\.instead[\s\S]*?\}\)/,
+  },
+  {
+    label: 'fallback dialogue assigning speaker user without simulation cache',
+    pattern: /if \(!dialogue\.length\) \{[\s\S]*?speaker:\s*['"]user['"]/,
+  },
+])
+
+requireIncludes('src/data/week1.ts', [
+  'ReviewPerformanceScores',
+  'isReviewPerformanceScores',
+  'performance_scores:',
+  'clarity',
+  'empathy',
+  'resolution',
+])
+requireMatches('src/data/week1.ts', [
+  {
+    label: 'ReviewResponsePayload keeps performance_scores optional for legacy review responses',
+    pattern:
+      /Omit<ReviewResponse,\s*'performance_scores'\s*\|\s*'is_demo'\s*\|\s*'demo_notice'>[\s\S]*?Partial<Pick<ReviewResponse,\s*'performance_scores'\s*\|\s*'is_demo'\s*\|\s*'demo_notice'>>/,
+  },
+  {
+    label: 'isReviewResponsePayload allows missing performance_scores but validates present scores',
+    pattern:
+      /typeof performanceScores === 'undefined'\s*\|\|\s*isReviewPerformanceScores\(performanceScores\)/,
+  },
+  {
+    label: 'stored review hydration normalizes legacy responses',
+    pattern: /function isStoredReviewResult[\s\S]*?normalizeReviewResponse\(response/,
+  },
+  {
+    label: 'normalizeReviewResponse preserves backend summary text',
+    pattern:
+      /function normalizeReviewResponse[\s\S]*?summary:\s*typeof raw\.summary === 'string'\s*\?\s*raw\.summary\s*:/,
+  },
+  {
+    label: 'normalizeReviewResponse preserves backend strengths',
+    pattern:
+      /function normalizeReviewResponse[\s\S]*?strengths:\s*[\s\S]*?isStringArray\(raw\.strengths\)[\s\S]*?\?\s*raw\.strengths\s*:/,
+  },
+  {
+    label: 'normalizeReviewResponse preserves backend risks',
+    pattern:
+      /function normalizeReviewResponse[\s\S]*?risks:\s*[\s\S]*?isStringArray\(raw\.risks\)[\s\S]*?\?\s*raw\.risks\s*:/,
+  },
+  {
+    label: 'normalizeReviewResponse only falls back scores to demoReviewPerformanceScores',
+    pattern:
+      /function normalizeReviewResponse[\s\S]*?performance_scores:\s*isReviewPerformanceScores\(raw\.performance_scores\)\s*\?\s*raw\.performance_scores\s*:\s*\{\s*\.\.\.demoReviewPerformanceScores\s*\}/,
+  },
+  {
+    label: 'normalizeReviewResponse preserves backend rewritten_message',
+    pattern:
+      /function normalizeReviewResponse[\s\S]*?rewritten_message:\s*normalizeRewrittenMessage\(raw\.rewritten_message as ReviewResponse\['rewritten_message'\]\)/,
+  },
+  {
+    label: 'normalizeReviewResponse preserves backend next_steps',
+    pattern:
+      /function normalizeReviewResponse[\s\S]*?next_steps:\s*[\s\S]*?isStringArray\(raw\.next_steps\)[\s\S]*?\?\s*raw\.next_steps\s*:/,
+  },
+  {
+    label: 'normalizeReviewResponse preserves backend safety_note',
+    pattern:
+      /function normalizeReviewResponse[\s\S]*?safety_note:\s*[\s\S]*?typeof raw\.safety_note === 'string'\s*\?\s*raw\.safety_note\s*:/,
+  },
+])
+
+requireIncludes('src/styles/main.css', [
+  'analysis-source-fill',
+  'transition: width',
+])
 
 if (failures.length > 0) {
   console.error('v2 verification failed:')

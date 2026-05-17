@@ -109,22 +109,28 @@ archive_pressure_score =
 
 ### 主要压力来源贡献
 
+`source_breakdown` 只按用户记录的 `event_type` 聚合压力贡献。每条事件仍先通过
+`analyze_pressure()` 计算单条压力分，因此发生频率、是否有效沟通、是否出现争吵或冷战
+会影响 `single_score_i`；但这些因素不会再作为独立来源标签返回。
+
+事件类型标签：
+
+| `event_type` | `source_breakdown[].label` |
+| --- | --- |
+| `noise` | 噪音冲突 |
+| `schedule` | 作息冲突 |
+| `hygiene` | 卫生冲突 |
+| `cost` | 费用冲突 |
+| `privacy` | 隐私边界 |
+| `emotion` | 情绪冲突 |
+
 对每条事件累加贡献：
 
 ```text
-event_source_label contribution += single_score_i * recency_weight_i * 0.55
-
-if frequency is weekly_multiple or daily:
-  "发生频率较高" contribution += FREQUENCY_SCORES[frequency] * recency_weight_i * 0.20
-
-if has_communicated is false:
-  "尚未有效沟通" contribution += 100 * recency_weight_i * 0.15
-
-if has_conflict is true:
-  "已出现争吵或冷战" contribution += 100 * recency_weight_i * 0.10
+event_type_label contribution += single_score_i * recency_weight_i
 ```
 
-按贡献值从高到低取前 3 个标签，先四舍五入为百分比，再把百分比差值调整到贡献最大的来源，确保返回的 3 个来源百分比总和严格等于 100。
+按贡献值从高到低返回所有贡献值大于 0 的事件类型标签，先四舍五入为百分比，再把百分比差值调整到贡献最大的来源，确保返回的来源百分比总和严格等于 100。
 
 ### 预期行为
 

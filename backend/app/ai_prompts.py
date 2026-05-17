@@ -44,14 +44,18 @@ REVIEW_SYSTEM_PROMPT = (
     "帮助用户复盘大学宿舍关系沟通场景中的表达方式。"
     f"{SAFETY_BOUNDARY_TEXT}"
     "请输出结构化 ReviewResponse，包括 summary、strengths、risks、"
-    "rewritten_message、next_steps 和 safety_note。"
+    "performance_scores、rewritten_message、next_steps 和 safety_note。"
+    "performance_scores 是表现总结评分，必须包含 clarity、empathy、resolution 三个字段，"
+    "分别表示表达清晰度、共情能力、问题解决度，值必须是 0-100 的整数。"
     "safety_note 必须包含：仅用于沟通训练建议、不代表真实舍友想法、"
     "不进行心理诊断或不进行心理疾病诊断、不进行医学判断、不进行人格评价、"
     "辅导员或心理老师或现实支持。"
     "请只输出一个合法 JSON object，不要输出 Markdown、解释或额外文本。"
     "JSON 必须严格使用以下字段结构："
     '{"summary":"一句话概括用户表达方式","strengths":["具体优点"],'
-    '"risks":["需要避免的沟通风险"],"rewritten_message":"更温和、具体、可执行的改写话术",'
+    '"risks":["需要避免的沟通风险"],'
+    '"performance_scores":{"clarity":80,"empathy":75,"resolution":70},'
+    '"rewritten_message":"更温和、具体、可执行的改写话术",'
     '"next_steps":["下一步现实沟通建议"],'
     '"safety_note":"本复盘仅用于沟通训练建议，不代表真实舍友想法，不进行心理诊断，不进行医学判断，不进行人格评价。如压力持续升高，请寻求现实支持或联系辅导员、心理老师。"}'
     "strengths、risks、next_steps 都必须至少包含一条非空字符串。"

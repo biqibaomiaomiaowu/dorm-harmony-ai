@@ -29,6 +29,9 @@ from app.schemas import (
 )
 
 
+REVIEW_PERFORMANCE_SCORES = {"clarity": 82, "empathy": 76, "resolution": 71}
+
+
 def test_analyze_response_rejects_unknown_risk_level():
     with pytest.raises(ValidationError):
         AnalyzeResponse(
@@ -368,12 +371,16 @@ def test_review_response_requires_actionable_lists():
         summary="用户表达了睡眠受影响的事实，整体语气较温和。",
         strengths=["说明了具体影响"],
         risks=["可以进一步明确时间范围"],
+        performance_scores=REVIEW_PERFORMANCE_SCORES,
         rewritten_message="我最近睡眠状态不太好，晚上 11 点后能不能戴耳机或调低音量？",
         next_steps=["选择双方情绪平稳的时间沟通"],
         safety_note="本复盘仅用于沟通训练建议，不代表真实舍友想法，不进行心理诊断，不进行医学判断，不进行人格评价。如压力持续升高，请寻求现实支持。",
     )
 
     assert response.strengths == ["说明了具体影响"]
+    assert response.performance_scores.clarity == 82
+    assert response.performance_scores.empathy == 76
+    assert response.performance_scores.resolution == 71
 
 
 def test_review_response_rejects_empty_actionable_lists():
@@ -382,6 +389,20 @@ def test_review_response_rejects_empty_actionable_lists():
             summary="用户表达了睡眠受影响的事实，整体语气较温和。",
             strengths=[],
             risks=["可以进一步明确时间范围"],
+            performance_scores=REVIEW_PERFORMANCE_SCORES,
+            rewritten_message="我最近睡眠状态不太好，晚上 11 点后能不能戴耳机或调低音量？",
+            next_steps=["选择双方情绪平稳的时间沟通"],
+            safety_note="本复盘仅用于沟通训练建议，不代表真实舍友想法，不进行心理诊断，不进行医学判断，不进行人格评价。如压力持续升高，请寻求现实支持。",
+        )
+
+
+def test_review_response_rejects_performance_scores_outside_0_to_100():
+    with pytest.raises(ValidationError):
+        ReviewResponse(
+            summary="用户表达了睡眠受影响的事实，整体语气较温和。",
+            strengths=["说明了具体影响"],
+            risks=["可以进一步明确时间范围"],
+            performance_scores={"clarity": 101, "empathy": 76, "resolution": 71},
             rewritten_message="我最近睡眠状态不太好，晚上 11 点后能不能戴耳机或调低音量？",
             next_steps=["选择双方情绪平稳的时间沟通"],
             safety_note="本复盘仅用于沟通训练建议，不代表真实舍友想法，不进行心理诊断，不进行医学判断，不进行人格评价。如压力持续升高，请寻求现实支持。",
@@ -394,6 +415,7 @@ def test_review_response_rejects_unsafe_safety_note():
             summary="用户表达了睡眠受影响的事实，整体语气较温和。",
             strengths=["说明了具体影响"],
             risks=["可以进一步明确时间范围"],
+            performance_scores=REVIEW_PERFORMANCE_SCORES,
             rewritten_message="我最近睡眠状态不太好，晚上 11 点后能不能戴耳机或调低音量？",
             next_steps=["选择双方情绪平稳的时间沟通"],
             safety_note="本建议仅供参考。",
@@ -406,6 +428,7 @@ def test_review_response_rejects_safety_note_missing_virtual_roommate_boundary()
             summary="用户表达了睡眠受影响的事实，整体语气较温和。",
             strengths=["说明了具体影响"],
             risks=["可以进一步明确时间范围"],
+            performance_scores=REVIEW_PERFORMANCE_SCORES,
             rewritten_message="我最近睡眠状态不太好，晚上 11 点后能不能戴耳机或调低音量？",
             next_steps=["选择双方情绪平稳的时间沟通"],
             safety_note="本复盘仅用于沟通训练建议，不进行心理诊断，不进行医学判断，不进行人格评价。如压力持续升高，请寻求现实支持。",
@@ -418,6 +441,7 @@ def test_review_response_rejects_safety_note_missing_training_purpose():
             summary="用户表达了睡眠受影响的事实，整体语气较温和。",
             strengths=["说明了具体影响"],
             risks=["可以进一步明确时间范围"],
+            performance_scores=REVIEW_PERFORMANCE_SCORES,
             rewritten_message="我最近睡眠状态不太好，晚上 11 点后能不能戴耳机或调低音量？",
             next_steps=["选择双方情绪平稳的时间沟通"],
             safety_note="不代表真实舍友想法，不进行心理诊断，不进行医学判断，不进行人格评价。如压力持续升高，请寻求现实支持。",
@@ -466,7 +490,17 @@ def test_prompts_include_deepseek_json_output_contract():
     for field_name in ("roommate", "personality", "message"):
         assert field_name in SIMULATE_SYSTEM_PROMPT
 
-    for field_name in ("summary", "strengths", "risks", "rewritten_message", "next_steps"):
+    for field_name in (
+        "summary",
+        "strengths",
+        "risks",
+        "performance_scores",
+        "clarity",
+        "empathy",
+        "resolution",
+        "rewritten_message",
+        "next_steps",
+    ):
         assert field_name in REVIEW_SYSTEM_PROMPT
 
 

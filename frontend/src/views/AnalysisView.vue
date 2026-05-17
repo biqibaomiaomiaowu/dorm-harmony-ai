@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import {
@@ -31,19 +31,20 @@ const isAnalysisLoading = ref(false)
 const analysisError = ref('')
 const insightStatus = ref<'idle' | 'loading' | 'ready' | 'missing-key' | 'unavailable' | 'error'>('idle')
 const insightError = ref('')
+const animatedScorePercent = ref(0)
+const animatedSourcePercents = ref<Record<string, number>>({})
+let analysisAnimationFrame = 0
+let isAnalysisViewActive = false
 
 const hasArchiveEvents = computed(() => result.value.event_count > 0)
 
 const sourceBreakdown = computed(() => {
   const tones = ['danger', 'warning', 'fresh']
 
-  if (result.value.source_breakdown.length === 0) {
-    return [{ label: '暂无来源', percent: 100, tone: 'fresh' }]
-  }
-
   return result.value.source_breakdown.map((source, index) => ({
     label: source.label,
-    percent: source.percent,
+    percent: clampPercent(source.percent),
+    animatedPercent: animatedSourcePercents.value[source.label] ?? 0,
     tone: tones[index % tones.length],
   }))
 })
@@ -59,7 +60,7 @@ const normalizedScore = computed(() => {
 })
 
 const scoreGaugeStyle = computed(() => ({
-  '--analysis-score-percent': `${normalizedScore.value}%`,
+  '--analysis-score-percent': `${animatedScorePercent.value}%`,
 }))
 
 // Compatibility marker for the older phase-3 static gate: scoreRingCircumference scoreRingStyle.
@@ -71,6 +72,85 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
+}
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0
+  }
+
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function prefersReducedMotion() {
+  if (typeof window.matchMedia !== 'function') {
+    return false
+  }
+
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
+function buildSourcePercentMap(percent = 1) {
+  return Object.fromEntries(
+    result.value.source_breakdown.map((source) => [
+      source.label,
+      Math.round(clampPercent(source.percent) * percent),
+    ]),
+  )
+}
+
+function applyFinalAnalysisProgress() {
+  if (!isAnalysisViewActive) {
+    return
+  }
+
+  animatedScorePercent.value = normalizedScore.value
+  animatedSourcePercents.value = buildSourcePercentMap()
+}
+
+function animateAnalysisProgress() {
+  if (!isAnalysisViewActive) {
+    return
+  }
+
+  if (analysisAnimationFrame) {
+    window.cancelAnimationFrame(analysisAnimationFrame)
+    analysisAnimationFrame = 0
+  }
+
+  if (prefersReducedMotion()) {
+    applyFinalAnalysisProgress()
+    return
+  }
+
+  animatedScorePercent.value = 0
+  animatedSourcePercents.value = buildSourcePercentMap(0)
+
+  const targetScore = normalizedScore.value
+  const durationMs = 720
+  const startTime = window.performance.now()
+
+  const step = (currentTime: number) => {
+    if (!isAnalysisViewActive) {
+      analysisAnimationFrame = 0
+      return
+    }
+
+    const elapsed = currentTime - startTime
+    const progress = Math.min(1, elapsed / durationMs)
+    const easedProgress = 1 - (1 - progress) ** 3
+
+    animatedScorePercent.value = Math.round(targetScore * easedProgress)
+    animatedSourcePercents.value = buildSourcePercentMap(easedProgress)
+
+    if (progress < 1) {
+      analysisAnimationFrame = window.requestAnimationFrame(step)
+    } else {
+      analysisAnimationFrame = 0
+    }
+  }
+
+  analysisAnimationFrame = window.requestAnimationFrame(step)
 }
 
 function isArchiveInsightResponse(value: unknown): value is ArchiveInsightResponse {
@@ -144,6 +224,10 @@ async function loadArchiveInsight(archiveSignature: string) {
   const cachedInsight = readCachedArchiveInsight(archiveSignature)
 
   if (cachedInsight) {
+    if (!isAnalysisViewActive) {
+      return
+    }
+
     archiveInsight.value = cachedInsight
     insightError.value = ''
     insightStatus.value = 'ready'
@@ -155,10 +239,20 @@ async function loadArchiveInsight(archiveSignature: string) {
   insightStatus.value = 'loading'
 
   try {
-    archiveInsight.value = await fetchArchiveInsight()
-    writeCachedArchiveInsight(archiveSignature, archiveInsight.value)
+    const insight = await fetchArchiveInsight()
+
+    if (!isAnalysisViewActive) {
+      return
+    }
+
+    archiveInsight.value = insight
+    writeCachedArchiveInsight(archiveSignature, insight)
     insightStatus.value = 'ready'
   } catch (error) {
+    if (!isAnalysisViewActive) {
+      return
+    }
+
     if (isConfiguredAiMissingError(error)) {
       insightStatus.value = 'missing-key'
       insightError.value = 'AI 心晴见解需要配置 DEEPSEEK_API_KEY 后生成。'
@@ -186,7 +280,19 @@ async function loadArchiveAnalysis() {
 
   try {
     const response = await fetchArchiveAnalysis()
+
+    if (!isAnalysisViewActive) {
+      return
+    }
+
     result.value = normalizeArchiveAnalysisResponse(response)
+    await nextTick()
+
+    if (!isAnalysisViewActive) {
+      return
+    }
+
+    animateAnalysisProgress()
 
     try {
       localStorage.setItem(ANALYSIS_RESULT_STORAGE_KEY, JSON.stringify(result.value))
@@ -196,18 +302,39 @@ async function loadArchiveAnalysis() {
 
     if (response.event_count > 0) {
       const archive = await fetchEventArchive()
+
+      if (!isAnalysisViewActive) {
+        return
+      }
+
       await loadArchiveInsight(buildArchiveSignature(archive.events))
     }
   } catch (error) {
+    if (!isAnalysisViewActive) {
+      return
+    }
+
     analysisError.value =
       error instanceof Error ? error.message : '总压力分析加载失败，请稍后重试'
   } finally {
-    isAnalysisLoading.value = false
+    if (isAnalysisViewActive) {
+      isAnalysisLoading.value = false
+    }
   }
 }
 
 onMounted(() => {
+  isAnalysisViewActive = true
   void loadArchiveAnalysis()
+})
+
+onBeforeUnmount(() => {
+  isAnalysisViewActive = false
+
+  if (analysisAnimationFrame) {
+    window.cancelAnimationFrame(analysisAnimationFrame)
+    analysisAnimationFrame = 0
+  }
 })
 </script>
 
@@ -255,7 +382,7 @@ onMounted(() => {
         </h2>
         <div class="analysis-gauge" :style="scoreGaugeStyle">
           <div class="analysis-gauge-core">
-            <strong>{{ normalizedScore }}</strong>
+            <strong>{{ animatedScorePercent }}</strong>
             <span>/ 100</span>
           </div>
         </div>
@@ -288,7 +415,10 @@ onMounted(() => {
             <span class="material-symbol" aria-hidden="true">pie_chart</span>
             矛盾溯源分析
           </h2>
-          <div class="analysis-source-bars">
+          <p v-if="sourceBreakdown.length === 0" class="analysis-source-empty">
+            暂无事件类型占比
+          </p>
+          <div v-else class="analysis-source-bars">
             <div v-for="source in sourceBreakdown" :key="source.label" class="analysis-source-item">
               <div>
                 <span>{{ source.label }}</span>
@@ -297,7 +427,7 @@ onMounted(() => {
               <div class="analysis-source-track card-border">
                 <i
                   :class="['analysis-source-fill', `analysis-source-fill-${source.tone}`]"
-                  :style="{ width: `${source.percent}%` }"
+                  :style="{ width: `${source.animatedPercent}%` }"
                 ></i>
               </div>
             </div>

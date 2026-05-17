@@ -106,10 +106,17 @@ export interface ReviewRewriteSuggestion {
   instead_after: string
 }
 
+export interface ReviewPerformanceScores {
+  clarity: number
+  empathy: number
+  resolution: number
+}
+
 export interface ReviewResponse {
   summary: string
   strengths: string[]
   risks: string[]
+  performance_scores: ReviewPerformanceScores
   rewritten_message: string | ReviewRewriteSuggestion
   next_steps: string[]
   safety_note: string
@@ -117,8 +124,8 @@ export interface ReviewResponse {
   demo_notice: string
 }
 
-type ReviewResponsePayload = Omit<ReviewResponse, 'is_demo' | 'demo_notice'> &
-  Partial<Pick<ReviewResponse, 'is_demo' | 'demo_notice'>>
+type ReviewResponsePayload = Omit<ReviewResponse, 'performance_scores' | 'is_demo' | 'demo_notice'> &
+  Partial<Pick<ReviewResponse, 'performance_scores' | 'is_demo' | 'demo_notice'>>
 
 export interface ReviewRequest {
   scenario: string
@@ -385,6 +392,12 @@ const demoReviewRisks = [
   '先给对方表达空间，再决定下一步沟通安排。',
 ]
 
+const demoReviewPerformanceScores: ReviewPerformanceScores = {
+  clarity: 84,
+  empathy: 78,
+  resolution: 82,
+}
+
 const demoReviewSteps = [
   '选择对方情绪较平稳时再复盘一次该话题。',
   '提前商量一个双方都能接受的休息时间规则。',
@@ -397,6 +410,7 @@ export function buildDemoReviewResponse(reason: string, request: ReviewRequest):
     summary: `你在“${scene}”中的沟通总体方向较平和，已经包含了表达影响与协商意愿，建议继续围绕具体执行细节收敛。`,
     strengths: [...demoReviewStrengths],
     risks: [...demoReviewRisks],
+    performance_scores: { ...demoReviewPerformanceScores },
     rewritten_message: { ...reviewSuggestionBypass },
     next_steps: [...demoReviewSteps],
     safety_note: '本复盘仅用于沟通训练建议，不进行医学、心理诊断或人格评价。',
@@ -496,6 +510,21 @@ function isReviewRewriteSuggestion(value: unknown): value is ReviewRewriteSugges
   )
 }
 
+function isReviewPerformanceScores(value: unknown): value is ReviewPerformanceScores {
+  if (!isRecord(value)) {
+    return false
+  }
+
+  return (
+    typeof value.clarity === 'number' &&
+    Number.isFinite(value.clarity) &&
+    typeof value.empathy === 'number' &&
+    Number.isFinite(value.empathy) &&
+    typeof value.resolution === 'number' &&
+    Number.isFinite(value.resolution)
+  )
+}
+
 function isReviewResponsePayload(value: unknown): value is ReviewResponsePayload {
   if (!isRecord(value)) {
     return false
@@ -504,6 +533,7 @@ function isReviewResponsePayload(value: unknown): value is ReviewResponsePayload
   const summary = (value as { summary?: unknown }).summary
   const strengths = (value as { strengths?: unknown }).strengths
   const risks = (value as { risks?: unknown }).risks
+  const performanceScores = (value as { performance_scores?: unknown }).performance_scores
   const rewrittenMessage = (value as { rewritten_message?: unknown }).rewritten_message
   const nextSteps = (value as { next_steps?: unknown }).next_steps
   const safetyNote = (value as { safety_note?: unknown }).safety_note
@@ -517,6 +547,7 @@ function isReviewResponsePayload(value: unknown): value is ReviewResponsePayload
     typeof summary === 'string' &&
     isStringArray(strengths) &&
     isStringArray(risks) &&
+    (typeof performanceScores === 'undefined' || isReviewPerformanceScores(performanceScores)) &&
     (typeof rewrittenMessage === 'string' || isReviewRewriteSuggestion(rewrittenMessage)) &&
     isStringArray(nextSteps) &&
     typeof safetyNote === 'string' &&
@@ -531,7 +562,8 @@ export function isReviewResponse(value: unknown): value is ReviewResponse {
 
   return (
     typeof (value as { is_demo?: unknown }).is_demo === 'boolean' &&
-    typeof (value as { demo_notice?: unknown }).demo_notice === 'string'
+    typeof (value as { demo_notice?: unknown }).demo_notice === 'string' &&
+    isReviewPerformanceScores((value as { performance_scores?: unknown }).performance_scores)
   )
 }
 
@@ -543,12 +575,18 @@ export function isStoredReviewResult(value: unknown): value is StoredReviewResul
   const request = (value as { request?: unknown }).request
   const response = (value as { response?: unknown }).response
 
-  return (
-    isRecord(request) &&
-    typeof request.scenario === 'string' &&
-    Array.isArray((request as { dialogue?: unknown }).dialogue) &&
-    isReviewResponse(response)
-  )
+  if (
+    !isRecord(request) ||
+    typeof request.scenario !== 'string' ||
+    !Array.isArray((request as { dialogue?: unknown }).dialogue) ||
+    !isReviewResponsePayload(response)
+  ) {
+    return false
+  }
+
+  const storedReview = value as { response: ReviewResponse }
+  storedReview.response = normalizeReviewResponse(response)
+  return true
 }
 
 function normalizeRewrittenMessage(
@@ -569,6 +607,7 @@ function normalizeReviewResponse(raw: {
   summary?: unknown
   strengths?: unknown
   risks?: unknown
+  performance_scores?: unknown
   rewritten_message?: unknown
   next_steps?: unknown
   safety_note?: unknown
@@ -585,6 +624,9 @@ function normalizeReviewResponse(raw: {
       isStringArray(raw.risks) && raw.risks.length > 0
         ? raw.risks
         : [...demoReviewRisks],
+    performance_scores: isReviewPerformanceScores(raw.performance_scores)
+      ? raw.performance_scores
+      : { ...demoReviewPerformanceScores },
     rewritten_message: normalizeRewrittenMessage(raw.rewritten_message as ReviewResponse['rewritten_message']),
     next_steps:
       isStringArray(raw.next_steps) && raw.next_steps.length > 0
