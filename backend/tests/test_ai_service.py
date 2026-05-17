@@ -43,6 +43,7 @@ ARCHIVE_INSIGHT_SAFETY_NOTE = (
     "不进行心理诊断、不进行医学判断、不进行人格评价。"
     "如压力持续升高，请联系辅导员或心理老师寻求现实支持。"
 )
+REVIEW_PERFORMANCE_SCORES = {"clarity": 82, "empathy": 76, "resolution": 71}
 
 
 @pytest.fixture(autouse=True)
@@ -88,6 +89,7 @@ class FakeRunner:
             summary="用户表达了睡眠受影响的事实，整体语气较温和。",
             strengths=["说明了具体影响"],
             risks=["可以进一步明确时间范围"],
+            performance_scores=REVIEW_PERFORMANCE_SCORES,
             rewritten_message="我最近睡眠状态不太好，晚上 11 点后能不能戴耳机或调低音量？",
             next_steps=["选择双方情绪平稳的时间沟通"],
             safety_note=REVIEW_SAFETY_NOTE,
@@ -152,6 +154,7 @@ class DictRunner:
             "summary": "用户表达了休息需求，语气相对清楚。",
             "strengths": ["说明了受影响的具体时间"],
             "risks": ["可以避免使用绝对化指责"],
+            "performance_scores": REVIEW_PERFORMANCE_SCORES,
             "rewritten_message": "晚上 11 点后我需要休息，能不能一起把声音降下来？",
             "next_steps": ["选择白天双方都方便的时间再确认规则"],
             "safety_note": REVIEW_SAFETY_NOTE,
@@ -407,6 +410,7 @@ def test_service_returns_review_from_runner():
     response = service.review(request)
 
     assert response.strengths
+    assert response.performance_scores.clarity == 82
     assert "不进行心理诊断" in response.safety_note
 
 
@@ -443,6 +447,7 @@ def test_service_normalizes_review_dict_from_runner():
 
     assert isinstance(response, ReviewResponse)
     assert response.summary == "用户表达了休息需求，语气相对清楚。"
+    assert response.performance_scores.empathy == 76
     assert response.next_steps == ["选择白天双方都方便的时间再确认规则"]
 
 

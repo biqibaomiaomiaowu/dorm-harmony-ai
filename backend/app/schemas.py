@@ -443,12 +443,23 @@ class ReviewRequest(BaseModel):
         return scenario
 
 
+class ReviewPerformanceScores(BaseModel):
+    """AI 复盘表现总结中的三项结构化评分。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    clarity: int = Field(ge=0, le=100)
+    empathy: int = Field(ge=0, le=100)
+    resolution: int = Field(ge=0, le=100)
+
+
 class ReviewResponse(BaseModel):
     """AI 沟通复盘接口的结构化响应。"""
 
     summary: str
     strengths: list[str] = Field(min_length=1)
     risks: list[str] = Field(min_length=1)
+    performance_scores: ReviewPerformanceScores
     rewritten_message: str
     next_steps: list[str] = Field(min_length=1)
     safety_note: str

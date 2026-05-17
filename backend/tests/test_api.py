@@ -25,6 +25,7 @@ from app.schemas import ArchiveInsightResponse, ReviewResponse, RoommateReply, S
 
 
 client = TestClient(app)
+REVIEW_PERFORMANCE_SCORES = {"clarity": 82, "empathy": 76, "resolution": 71}
 
 
 class FakeAIService:
@@ -58,6 +59,7 @@ class FakeAIService:
             summary="表达了睡眠受影响的具体困扰。",
             strengths=["说明了具体时间和影响", "语气保持克制"],
             risks=["可能让对方觉得被指责"],
+            performance_scores=REVIEW_PERFORMANCE_SCORES,
             rewritten_message="我最近 11 点后比较需要休息，可以麻烦你那之后降低音量吗？",
             next_steps=["先约定安静时段", "必要时请辅导员协助沟通"],
             safety_note=(
@@ -327,10 +329,12 @@ def test_event_analysis_endpoint_returns_archive_pressure_for_shared_store():
     body = response.json()
     assert body["pressure_score"] == 76
     assert body["risk_level"] == "high"
-    assert body["main_sources"]
+    assert body["main_sources"] == ["噪音冲突"]
     assert body["event_count"] == 1
     assert body["active_30d_count"] == 1
-    assert body["source_breakdown"]
+    assert body["source_breakdown"] == [
+        {"label": "噪音冲突", "percent": 100, "contribution": 76.0}
+    ]
     assert sum(source["percent"] for source in body["source_breakdown"]) == 100
     for source in body["source_breakdown"]:
         assert 0 <= source["percent"] <= 100
@@ -483,6 +487,7 @@ def test_review_endpoint_returns_structured_report():
     body = response.json()
     assert body["strengths"]
     assert body["risks"]
+    assert body["performance_scores"] == REVIEW_PERFORMANCE_SCORES
     assert "11 点后" in body["rewritten_message"]
     assert "不进行心理诊断" in body["safety_note"]
 

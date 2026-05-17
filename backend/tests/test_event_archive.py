@@ -8,6 +8,13 @@ from app.event_store import InMemoryEventStore, JsonEventStore
 from app.schemas import EventRecordCreate
 
 
+DISALLOWED_SOURCE_BREAKDOWN_LABELS = {
+    "发生频率较高",
+    "尚未有效沟通",
+    "已出现争吵或冷战",
+}
+
+
 def test_event_record_create_requires_event_date_as_date():
     record = EventRecordCreate(
         event_date="2026-05-15",
@@ -194,6 +201,99 @@ def test_archive_pressure_accumulates_recent_multiple_events():
     assert result.risk_level == "severe"
     assert result.active_30d_count == 3
     assert result.source_breakdown[0].percent > 0
+
+
+def test_archive_source_breakdown_uses_event_type_pressure_contributions_only():
+    store = InMemoryEventStore()
+    store.add(EventRecordCreate(
+        event_date=date(2026, 5, 15),
+        event_type="noise",
+        severity=4,
+        frequency="weekly_multiple",
+        emotion="anxious",
+        has_communicated=False,
+        has_conflict=True,
+        description="舍友晚上打游戏声音很大，影响睡眠。",
+    ))
+    store.add(EventRecordCreate(
+        event_date=date(2026, 5, 15),
+        event_type="hygiene",
+        severity=2,
+        frequency="occasional",
+        emotion="helpless",
+        has_communicated=True,
+        has_conflict=False,
+        description="公共区域偶尔没人整理，但已经协商过一次。",
+    ))
+
+    result = analyze_archive_pressure(store.list(), today=date(2026, 5, 15))
+
+    source_by_label = {source.label: source for source in result.source_breakdown}
+    assert list(source_by_label) == ["噪音冲突", "卫生冲突"]
+    assert DISALLOWED_SOURCE_BREAKDOWN_LABELS.isdisjoint(source_by_label)
+    assert source_by_label["噪音冲突"].contribution == 76
+    assert source_by_label["卫生冲突"].contribution == 34
+    assert source_by_label["噪音冲突"].percent == 69
+    assert source_by_label["卫生冲突"].percent == 31
+    assert sum(source.percent for source in result.source_breakdown) == 100
+
+
+def test_archive_source_breakdown_returns_all_recorded_event_type_contributions():
+    store = InMemoryEventStore()
+    store.add(EventRecordCreate(
+        event_date=date(2026, 5, 15),
+        event_type="schedule",
+        severity=3,
+        frequency="daily",
+        emotion="angry",
+        has_communicated=False,
+        has_conflict=True,
+        description="舍友长期凌晨开灯洗漱，已经多次影响休息。",
+    ))
+    store.add(EventRecordCreate(
+        event_date=date(2026, 5, 15),
+        event_type="noise",
+        severity=4,
+        frequency="weekly_multiple",
+        emotion="anxious",
+        has_communicated=False,
+        has_conflict=True,
+        description="舍友晚上打游戏声音很大，影响睡眠。",
+    ))
+    store.add(EventRecordCreate(
+        event_date=date(2026, 5, 15),
+        event_type="cost",
+        severity=3,
+        frequency="weekly_multiple",
+        emotion="wronged",
+        has_communicated=True,
+        has_conflict=False,
+        description="公共用品费用分摊总是说不清，心里有些委屈。",
+    ))
+    store.add(EventRecordCreate(
+        event_date=date(2026, 5, 15),
+        event_type="hygiene",
+        severity=2,
+        frequency="occasional",
+        emotion="helpless",
+        has_communicated=True,
+        has_conflict=False,
+        description="公共区域偶尔没人整理，但已经协商过一次。",
+    ))
+
+    result = analyze_archive_pressure(store.list(), today=date(2026, 5, 15))
+
+    labels = [source.label for source in result.source_breakdown]
+    assert labels == ["作息冲突", "噪音冲突", "费用冲突", "卫生冲突"]
+    assert DISALLOWED_SOURCE_BREAKDOWN_LABELS.isdisjoint(labels)
+    assert [
+        source.contribution
+        for source in result.source_breakdown
+    ] == sorted(
+        (source.contribution for source in result.source_breakdown),
+        reverse=True,
+    )
+    assert sum(source.percent for source in result.source_breakdown) == 100
 
 
 def test_archive_pressure_old_event_has_lower_current_weight():
