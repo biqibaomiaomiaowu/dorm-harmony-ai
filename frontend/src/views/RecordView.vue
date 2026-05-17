@@ -19,11 +19,13 @@ import {
 } from '@/data/eventArchive'
 
 const router = useRouter()
+const descriptionPlaceholder = `例：${sampleAnalyzeRequest.description}`
 
 // v2 replaces the former submitAnalyzeRequest record flow with createEventRecord.
 const form = reactive<EventRecordForm>({
   event_date: formatLocalDate(),
   ...sampleAnalyzeRequest,
+  description: '',
 })
 const isSubmitting = ref(false)
 const submitError = ref('')
@@ -205,7 +207,7 @@ async function submitRecord() {
         <textarea
           v-model="form.description"
           rows="4"
-          placeholder="写下当时的具体情况..."
+          :placeholder="descriptionPlaceholder"
         />
       </label>
 

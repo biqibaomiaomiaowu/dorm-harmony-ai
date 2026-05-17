@@ -28,6 +28,8 @@ interface RecordLike {
 }
 
 const fallbackDialogueMessage = '请先明确你本次沟通希望对方做出的具体调整。'
+const emptyLatestUserMessage = '暂无本轮用户输入'
+const fallbackSystemDialogueMessage = '暂无模拟对话缓存，请先返回模拟页完成一次对话。'
 
 interface ReviewContext {
   scenario: string
@@ -47,12 +49,6 @@ const defaultRewriteSuggestion: ReviewRewriteSuggestion = {
   communication_space: '我想先一起定个试行的规则，我们看看一周后是否都能适应。',
   instead: '你总是打游戏太吵，别人会不会想过我？',
   instead_after: '我最近睡眠状态不太好，晚上声音比较容易影响我。我们能不能约定 11 点后戴耳机？',
-}
-
-const scoreFallback = {
-  clarity: 85,
-  empathy: 72,
-  resolution: 90,
 }
 
 // Legacy phase-2 static gate markers retained while the v2 design uses renamed sections:
@@ -239,8 +235,13 @@ function hydrateReviewContext(): ReviewContext {
     const eventHint =
       typeof lastEvent?.description === 'string' && lastEvent.description.length > 0
         ? lastEvent.description
-        : '先梳理你在沟通中希望对方调整的具体内容。'
-    dialogue = [{ speaker: 'user', message: eventHint }]
+        : fallbackSystemDialogueMessage
+    dialogue = [
+      {
+        speaker: 'system',
+        message: `未找到本轮模拟对话缓存。${eventHint}`,
+      },
+    ]
     storedDialogue.value = dialogue
     scenario = lastEvent?.event_type
       ? `舍友${lastEvent.event_type === 'noise_conflict' ? '作息' : '沟通'}场景`
@@ -277,6 +278,14 @@ const dialogueStats = computed(() => {
     roommateReplies: dialogue.filter((line) => line.speaker.startsWith('roommate_')).length,
   }
 })
+
+function normalizeReviewScore(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0
+  }
+
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
 
 function hydrateStoredReview(payload: ReviewRequest): ReviewResponse | null {
   const clearStoredReview = () => {
@@ -317,22 +326,19 @@ function hydrateStoredReview(payload: ReviewRequest): ReviewResponse | null {
 const scoreCards = computed(() => [
   {
     title: 'Clarity',
-    value: Math.max(68, scoreFallback.clarity - (reviewResponse.value.risks.length > 2 ? 10 : 0)),
+    value: normalizeReviewScore(reviewResponse.value.performance_scores.clarity),
     description: '表达清晰度',
     tone: 'clarity',
   },
   {
     title: 'Empathy',
-    value: Math.max(
-      60,
-      scoreFallback.empathy + (reviewResponse.value.strengths.length >= 2 ? 8 : 0),
-    ),
+    value: normalizeReviewScore(reviewResponse.value.performance_scores.empathy),
     description: '共情能力',
     tone: 'empathy',
   },
   {
     title: 'Resolution',
-    value: Math.max(60, scoreFallback.resolution - (reviewResponse.value.risks.length >= 3 ? 6 : 2)),
+    value: normalizeReviewScore(reviewResponse.value.performance_scores.resolution),
     description: '问题解决度',
     tone: 'resolution',
   },
@@ -349,6 +355,14 @@ const rewriteSuggestion = computed<ReviewRewriteSuggestion>(() => {
   return reviewResponse.value.rewritten_message
 })
 
+const latestUserMessage = computed(() => {
+  const latestLine = [...reviewRequest.value.dialogue]
+    .reverse()
+    .find((line) => line.speaker === 'user' && line.message.trim().length > 0)
+
+  return latestLine?.message.trim() || emptyLatestUserMessage
+})
+
 function toSafeArray(value: string[]): string[] {
   return value.length > 0 ? value : ['暂无数据']
 }
@@ -358,12 +372,20 @@ function dialogueSpeakerLabel(speaker: ReviewDialogueLine['speaker']) {
     return '你'
   }
 
+  if (speaker === 'system') {
+    return '系统提示'
+  }
+
   return speaker.replace('roommate_', '舍友 ').toUpperCase()
 }
 
 function dialogueSpeakerInitial(speaker: ReviewDialogueLine['speaker']) {
   if (speaker === 'user') {
     return ''
+  }
+
+  if (speaker === 'system') {
+    return 'S'
   }
 
   return speaker.replace('roommate_', '').toUpperCase()
@@ -556,7 +578,7 @@ onMounted(() => {
         <div class="speech-rewrite-row pop-card pop-shadow">
           <article class="speech-before">
             <p class="rewrite-label">而不是这样说</p>
-            <p>“{{ rewriteSuggestion.instead }}”</p>
+            <p>“{{ latestUserMessage }}”</p>
           </article>
           <div class="speech-arrow" aria-hidden="true">
             <span class="material-symbol">arrow_forward</span>
