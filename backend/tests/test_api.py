@@ -1,6 +1,6 @@
 import inspect
 import json
-from datetime import date, timedelta
+from datetime import date
 
 from fastapi.testclient import TestClient
 import pytest
@@ -246,7 +246,7 @@ def test_create_event_record_rejects_future_event_date():
     response = client.post(
         "/api/events",
         json={
-            "event_date": (date.today() + timedelta(days=1)).isoformat(),
+            "event_date": date.max.isoformat(),
             "event_type": "noise",
             "severity": 4,
             "frequency": "weekly_multiple",
@@ -354,6 +354,123 @@ def test_event_analysis_endpoint_handles_empty_archive():
     assert body["event_count"] == 0
     assert body["source_breakdown"] == []
     assert "先记录事件" in body["suggestion"]
+
+
+def test_delete_event_record_removes_event_from_archive():
+    event_store = InMemoryEventStore()
+    app.dependency_overrides[get_event_store] = lambda: event_store
+
+    create_response = client.post(
+        "/api/events",
+        json={
+            "event_date": date.today().isoformat(),
+            "event_type": "noise",
+            "severity": 4,
+            "frequency": "weekly_multiple",
+            "emotion": "anxious",
+            "has_communicated": False,
+            "has_conflict": True,
+            "description": "舍友晚上打游戏声音很大，影响睡眠。",
+        },
+    )
+    event_id = create_response.json()["id"]
+
+    delete_response = client.delete(f"/api/events/{event_id}")
+    list_response = client.get("/api/events")
+
+    assert create_response.status_code == 200
+    assert delete_response.status_code == 204
+    assert delete_response.content == b""
+    assert list_response.status_code == 200
+    assert list_response.json() == {"events": []}
+
+
+def test_delete_event_record_returns_404_for_missing_event():
+    event_store = InMemoryEventStore()
+    app.dependency_overrides[get_event_store] = lambda: event_store
+
+    response = client.delete("/api/events/missing-event")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "事件档案不存在或已被删除。"
+
+
+def test_event_analysis_recomputes_after_event_deletion():
+    event_store = InMemoryEventStore()
+    app.dependency_overrides[get_event_store] = lambda: event_store
+    today = date.today().isoformat()
+
+    first_response = client.post(
+        "/api/events",
+        json={
+            "event_date": today,
+            "event_type": "noise",
+            "severity": 4,
+            "frequency": "weekly_multiple",
+            "emotion": "anxious",
+            "has_communicated": False,
+            "has_conflict": True,
+            "description": "舍友晚上打游戏声音很大，影响睡眠。",
+        },
+    )
+    second_response = client.post(
+        "/api/events",
+        json={
+            "event_date": today,
+            "event_type": "hygiene",
+            "severity": 2,
+            "frequency": "occasional",
+            "emotion": "helpless",
+            "has_communicated": True,
+            "has_conflict": False,
+            "description": "公共区域偶尔没人整理，但已经协商过一次。",
+        },
+    )
+
+    delete_response = client.delete(f"/api/events/{first_response.json()['id']}")
+    analysis_response = client.get("/api/events/analysis")
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert delete_response.status_code == 204
+    assert analysis_response.status_code == 200
+    body = analysis_response.json()
+    assert body["event_count"] == 1
+    assert body["pressure_score"] == second_response.json()["single_analysis"]["pressure_score"]
+    assert body["main_sources"] == ["卫生冲突"]
+
+
+def test_deleting_last_event_resets_analysis_and_blocks_archive_insight():
+    event_store = InMemoryEventStore()
+    ai_service = CapturingArchiveInsightService()
+    app.dependency_overrides[get_event_store] = lambda: event_store
+    app.dependency_overrides[get_ai_service] = lambda: ai_service
+
+    create_response = create_noise_event_for_archive()
+    delete_response = client.delete(f"/api/events/{create_response.json()['id']}")
+    analysis_response = client.get("/api/events/analysis")
+    insight_response = client.post("/api/events/insight")
+
+    assert create_response.status_code == 200
+    assert delete_response.status_code == 204
+    assert analysis_response.status_code == 200
+    assert analysis_response.json()["pressure_score"] == 0
+    assert analysis_response.json()["event_count"] == 0
+    assert insight_response.status_code == 400
+    assert ai_service.archive_insight_called is False
+
+
+def test_cors_preflight_allows_delete_for_local_vite_frontend():
+    response = client.options(
+        "/api/events/some-event",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "DELETE",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
 
 
 def test_cors_preflight_allows_local_vite_frontend():

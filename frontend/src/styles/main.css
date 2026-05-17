@@ -1624,6 +1624,63 @@ textarea:focus {
   opacity: 0.7;
 }
 
+.archive-delete-corner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 4;
+  display: grid;
+  width: 58px;
+  height: 58px;
+  place-items: start;
+  border: 0;
+  border-right: 2px solid var(--ink);
+  border-bottom: 2px solid var(--ink);
+  border-radius: 16px 0 16px 0;
+  background: var(--error-soft);
+  color: var(--error);
+  padding: 8px 0 0 8px;
+}
+
+.archive-delete-corner .material-symbol {
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.archive-delete-text {
+  position: absolute;
+  left: 8px;
+  bottom: 7px;
+  font-size: 0.62rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.archive-delete-corner:hover:not(:disabled),
+.archive-event-card-confirming .archive-delete-corner {
+  background: var(--tertiary);
+  color: var(--ink);
+  transform: translate(-1px, -1px) rotate(-3deg);
+}
+
+.archive-delete-corner:disabled {
+  cursor: wait;
+  opacity: 0.76;
+}
+
+.archive-event-card .sticker-date {
+  margin-left: 40px;
+}
+
+.archive-event-card-removing {
+  pointer-events: none;
+  animation: archive-sticker-wind-away 680ms cubic-bezier(0.34, 0.02, 0.2, 1) both;
+}
+
+.archive-sticker-move {
+  transition: transform 360ms ease;
+}
+
 .event-sticker-grid .archive-event-card:nth-child(6n + 1) {
   --sticker-rotate: -2.4deg;
   --tape-rotate: -7deg;
@@ -3833,6 +3890,21 @@ textarea:focus {
   }
 }
 
+@keyframes archive-sticker-wind-away {
+  0% {
+    opacity: 1;
+    transform: rotate(var(--sticker-rotate, 0deg)) translate(0, 0);
+  }
+  45% {
+    opacity: 0.92;
+    transform: rotate(calc(var(--sticker-rotate, 0deg) + 7deg)) translate(28px, -18px);
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(calc(var(--sticker-rotate, 0deg) + 20deg)) translate(220px, -82px);
+  }
+}
+
 @keyframes bounce-float {
   0%,
   100% {
@@ -4112,6 +4184,8 @@ textarea:focus {
   .archive-summary-grid,
   .event-sticker-grid {
     grid-template-columns: 1fr;
+    overflow-x: hidden;
+    overflow-x: clip;
   }
 
   .archive-action-bar,
@@ -4151,6 +4225,21 @@ textarea:focus {
   .archive-event-card {
     min-height: auto;
     transform: none;
+  }
+
+  .archive-event-card .sticker-date {
+    margin-left: 44px;
+  }
+
+  @keyframes archive-sticker-wind-away {
+    0% {
+      opacity: 1;
+      transform: translate(0, 0);
+    }
+    100% {
+      opacity: 0;
+      transform: translate(96px, -42px) rotate(12deg);
+    }
   }
 
   .sticker-meta {

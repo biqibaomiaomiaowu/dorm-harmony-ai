@@ -3,6 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import {
+  ARCHIVE_INSIGHT_CACHE_KEY,
+  deleteEventRecord,
   emotionLabels,
   eventTypeLabels,
   fetchEventArchive,
@@ -14,6 +16,10 @@ const events = ref<EventRecord[]>([])
 const isLoading = ref(false)
 const loadError = ref('')
 const currentPage = ref(1)
+const confirmingDeleteId = ref('')
+const deletingEventIds = ref<Set<string>>(new Set())
+const removingEventIds = ref<Set<string>>(new Set())
+const deleteError = ref('')
 const pageSize = 6
 
 const latestEventDate = computed(() => events.value[0]?.event_date ?? '暂无记录')
@@ -21,6 +27,9 @@ const pageCount = computed(() => Math.max(1, Math.ceil(events.value.length / pag
 const pageStartIndex = computed(() => (currentPage.value - 1) * pageSize)
 const pagedEvents = computed(() =>
   events.value.slice(pageStartIndex.value, pageStartIndex.value + pageSize),
+)
+const hasPendingArchiveMutation = computed(
+  () => deletingEventIds.value.size > 0 || removingEventIds.value.size > 0,
 )
 const recentEventCount = computed(() => {
   const today = new Date()
@@ -55,6 +64,70 @@ function communicationLabel(value: boolean) {
 function stickerTone(index: number) {
   const tones = ['sticker-pink', 'sticker-yellow', 'sticker-purple', 'sticker-green', 'sticker-blue', 'sticker-cream']
   return tones[index % tones.length]
+}
+
+function isDeleting(eventId: string) {
+  return deletingEventIds.value.has(eventId)
+}
+
+function isRemoving(eventId: string) {
+  return removingEventIds.value.has(eventId)
+}
+
+function cloneIdSet(source: Set<string>, eventId: string, action: 'add' | 'delete') {
+  const next = new Set(source)
+  next[action](eventId)
+  return next
+}
+
+function clearArchiveInsightCache() {
+  try {
+    localStorage.removeItem(ARCHIVE_INSIGHT_CACHE_KEY)
+  } catch {
+    // Restricted browser sessions may block localStorage; analysis still reloads live data.
+  }
+}
+
+function removeEventAfterAnimation(eventId: string) {
+  events.value = events.value.filter((event) => event.id !== eventId)
+  removingEventIds.value = cloneIdSet(removingEventIds.value, eventId, 'delete')
+  confirmingDeleteId.value = ''
+  currentPage.value = Math.min(currentPage.value, pageCount.value)
+}
+
+async function requestDeleteEvent(event: EventRecord) {
+  if (isDeleting(event.id) || isRemoving(event.id)) {
+    return
+  }
+
+  if (confirmingDeleteId.value !== event.id) {
+    confirmingDeleteId.value = event.id
+    deleteError.value = ''
+    return
+  }
+
+  deletingEventIds.value = cloneIdSet(deletingEventIds.value, event.id, 'add')
+  deleteError.value = ''
+
+  try {
+    await deleteEventRecord(event.id)
+    clearArchiveInsightCache()
+    removingEventIds.value = cloneIdSet(removingEventIds.value, event.id, 'add')
+  } catch (error) {
+    deleteError.value = error instanceof Error ? error.message : '事件删除失败，请稍后重试'
+  } finally {
+    deletingEventIds.value = cloneIdSet(deletingEventIds.value, event.id, 'delete')
+  }
+}
+
+function handleStickerAnimationEnd(event: AnimationEvent, eventId: string) {
+  if (
+    event.animationName === 'archive-sticker-wind-away' &&
+    event.currentTarget === event.target &&
+    isRemoving(eventId)
+  ) {
+    removeEventAfterAnimation(eventId)
+  }
 }
 
 function goToPreviousPage() {
@@ -144,7 +217,7 @@ onMounted(() => {
           <button
             class="timeline-page-btn pop-shadow material-symbol"
             type="button"
-            :disabled="currentPage === 1"
+            :disabled="currentPage === 1 || hasPendingArchiveMutation"
             aria-label="上一页事件贴纸"
             @click="goToPreviousPage"
           >
@@ -156,7 +229,7 @@ onMounted(() => {
           <button
             class="timeline-page-btn pop-shadow material-symbol"
             type="button"
-            :disabled="currentPage === pageCount"
+            :disabled="currentPage === pageCount || hasPendingArchiveMutation"
             aria-label="下一页事件贴纸"
             @click="goToNextPage"
           >
@@ -165,9 +238,16 @@ onMounted(() => {
         </div>
       </div>
 
-      <p v-if="loadError" class="error-text archive-error">{{ loadError }}</p>
+      <p v-if="loadError || deleteError" class="error-text archive-error" role="alert">
+        {{ loadError || deleteError }}
+      </p>
 
-      <div v-if="isLoading && events.length === 0" class="archive-empty card-border">
+      <div
+        v-if="isLoading && events.length === 0"
+        class="archive-empty card-border"
+        role="status"
+        aria-live="polite"
+      >
         正在加载事件档案...
       </div>
 
@@ -179,7 +259,7 @@ onMounted(() => {
         </RouterLink>
       </div>
 
-      <div v-else class="event-sticker-grid">
+      <TransitionGroup v-else name="archive-sticker" tag="div" class="event-sticker-grid">
         <article
           v-for="(event, index) in pagedEvents"
           :key="event.id"
@@ -187,8 +267,39 @@ onMounted(() => {
             'archive-event-card',
             'event-sticker-card',
             stickerTone(pageStartIndex + index),
+            {
+              'archive-event-card-confirming': confirmingDeleteId === event.id,
+              'archive-event-card-deleting': isDeleting(event.id),
+              'archive-event-card-removing': isRemoving(event.id),
+            },
           ]"
+          @animationend="handleStickerAnimationEnd($event, event.id)"
         >
+          <button
+            class="archive-delete-corner pop-shadow"
+            type="button"
+            :disabled="isDeleting(event.id) || isRemoving(event.id)"
+            :aria-label="
+              confirmingDeleteId === event.id
+                ? `确认删除 ${eventTitle(event)}`
+                : `删除 ${eventTitle(event)}`
+            "
+            @click="requestDeleteEvent(event)"
+          >
+            <span class="material-symbol" aria-hidden="true">
+              {{
+                isDeleting(event.id)
+                  ? 'hourglass_top'
+                  : confirmingDeleteId === event.id
+                    ? 'check'
+                    : 'close'
+              }}
+            </span>
+            <span class="archive-delete-text">
+              {{ confirmingDeleteId === event.id ? '确认' : '删除' }}
+            </span>
+          </button>
+
           <span class="sticker-date">
             <span class="material-symbol" aria-hidden="true">event</span>
             {{ event.event_date }}
@@ -211,7 +322,7 @@ onMounted(() => {
             <span>沟通状态<b>{{ communicationLabel(event.has_communicated) }}</b></span>
           </div>
         </article>
-      </div>
+      </TransitionGroup>
     </section>
   </main>
 </template>

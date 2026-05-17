@@ -66,6 +66,8 @@ export interface ArchiveInsightResponse {
   safety_note: string
 }
 
+export const ARCHIVE_INSIGHT_CACHE_KEY = 'dorm-harmony:archive-insight-cache:v1'
+
 const EVENT_TYPE_MAP: Record<string, ArchiveEventType> = {
   noise_conflict: 'noise',
   schedule_conflict: 'schedule',
@@ -305,6 +307,14 @@ export async function fetchEventArchive(): Promise<EventArchiveResponse> {
   }
 
   return raw
+}
+
+export async function deleteEventRecord(id: string): Promise<void> {
+  const response = await fetch(`/api/events/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+
+  await assertOk(response, '事件删除失败')
 }
 
 export async function fetchArchiveAnalysis(): Promise<ArchiveAnalysisResponse> {

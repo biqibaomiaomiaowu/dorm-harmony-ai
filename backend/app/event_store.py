@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import Lock
+from typing import Iterator
 from uuid import uuid4
 
 from app.schemas import EventRecord, EventRecordCreate
 from app.scoring import analyze_pressure
+
+if os.name == "posix":
+    import fcntl
+else:
+    fcntl = None
 
 
 _PATH_LOCKS_GUARD = Lock()
@@ -36,6 +43,23 @@ def _get_path_lock(path: Path) -> object:
         return _PATH_LOCKS[lock_key]
 
 
+@contextmanager
+def _exclusive_file_lock(path: Path) -> Iterator[None]:
+    """用文件锁保护跨进程读改写；非 POSIX 环境退回到线程锁保护。"""
+    if fcntl is None:
+        yield
+        return
+
+    lock_path = path.with_name(f"{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 class InMemoryEventStore:
     """测试和临时运行使用的内存事件档案存储。"""
 
@@ -58,6 +82,14 @@ class InMemoryEventStore:
         """按事件日期和创建时间倒序返回内存中的事件记录。"""
         return _sort_events(self._events)
 
+    def delete(self, event_id: str) -> bool:
+        """删除指定 id 的内存事件记录，返回是否实际删除。"""
+        original_count = len(self._events)
+        self._events = [
+            event for event in self._events if event.id != event_id
+        ]
+        return len(self._events) != original_count
+
 
 class JsonEventStore:
     """基于本地 JSON 文件的事件档案存储。"""
@@ -70,20 +102,35 @@ class JsonEventStore:
     def add(self, payload: EventRecordCreate) -> EventRecord:
         """读取现有档案、追加新事件，并原子写回 JSON 文件。"""
         with self._lock:
-            events = self._load_events()
-            event = EventRecord(
-                **payload.model_dump(),
-                id=str(uuid4()),
-                created_at=datetime.now(timezone.utc),
-                single_analysis=analyze_pressure(payload),
-            )
-            events.append(event)
-            self._write_events(events)
-            return event
+            with _exclusive_file_lock(self._path):
+                events = self._load_events()
+                event = EventRecord(
+                    **payload.model_dump(),
+                    id=str(uuid4()),
+                    created_at=datetime.now(timezone.utc),
+                    single_analysis=analyze_pressure(payload),
+                )
+                events.append(event)
+                self._write_events(events)
+                return event
 
     def list(self) -> list[EventRecord]:
         """从 JSON 文件读取并按展示顺序返回事件档案。"""
         return _sort_events(self._load_events())
+
+    def delete(self, event_id: str) -> bool:
+        """读取现有档案、删除指定事件，并原子写回 JSON 文件。"""
+        with self._lock:
+            with _exclusive_file_lock(self._path):
+                events = self._load_events()
+                remaining_events = [
+                    event for event in events if event.id != event_id
+                ]
+                if len(remaining_events) == len(events):
+                    return False
+
+                self._write_events(remaining_events)
+                return True
 
     def _load_events(self) -> list[EventRecord]:
         """从 JSON 文件加载事件记录，并用 Pydantic 恢复模型。"""

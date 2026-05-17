@@ -49,7 +49,7 @@ app = FastAPI(title="Dorm Harmony AI")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_get_cors_origins(),
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -91,6 +91,19 @@ def list_event_records(
 ) -> EventArchiveResponse:
     """返回当前事件档案列表，不调用 AI 服务。"""
     return EventArchiveResponse(events=event_store.list())
+
+
+@app.delete("/api/events/{event_id}", status_code=204)
+def delete_event_record(
+    event_id: str,
+    event_store: JsonEventStore = Depends(get_event_store),
+) -> None:
+    """删除一条事件档案；派生压力和 AI 见解由前端重新请求。"""
+    if not event_store.delete(event_id):
+        raise HTTPException(
+            status_code=404,
+            detail="事件档案不存在或已被删除。",
+        )
 
 
 @app.get("/api/events/analysis", response_model=ArchiveAnalysisResponse)

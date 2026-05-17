@@ -1,4 +1,5 @@
-from datetime import date, datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -33,7 +34,7 @@ def test_event_record_create_requires_event_date_as_date():
 def test_event_record_create_rejects_future_event_date():
     with pytest.raises(ValidationError):
         EventRecordCreate(
-            event_date=date.today() + timedelta(days=1),
+            event_date=date.max,
             event_type="noise",
             severity=4,
             frequency="weekly_multiple",
@@ -94,6 +95,32 @@ def test_json_event_store_instances_share_path_level_lock(tmp_path):
     assert first_store._lock is second_store._lock
 
 
+def test_json_event_store_preserves_concurrent_writes_from_same_process(tmp_path):
+    store_path = tmp_path / "events.json"
+
+    def add_event(index: int) -> str:
+        event = JsonEventStore(store_path).add(EventRecordCreate(
+            event_date="2026-05-15",
+            event_type="noise",
+            severity=2,
+            frequency="occasional",
+            emotion="irritable",
+            has_communicated=True,
+            has_conflict=False,
+            description=f"并发记录事件 {index}。",
+        ))
+        return event.id
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        event_ids = list(executor.map(add_event, range(20)))
+
+    restored_ids = {
+        event.id for event in JsonEventStore(store_path).list()
+    }
+
+    assert restored_ids == set(event_ids)
+
+
 def test_json_event_store_persists_models_sorted_and_cleans_temporary_files(tmp_path):
     store_path = tmp_path / "events.json"
     store = JsonEventStore(store_path)
@@ -140,6 +167,84 @@ def test_json_event_store_persists_models_sorted_and_cleans_temporary_files(tmp_
     assert restored_events[0].created_at == datetime(2026, 5, 15, 9, tzinfo=timezone.utc)
     assert restored_events[0].single_analysis.pressure_score == 76
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_in_memory_event_store_deletes_existing_event():
+    store = InMemoryEventStore()
+    saved_event = store.add(EventRecordCreate(
+        event_date="2026-05-15",
+        event_type="noise",
+        severity=4,
+        frequency="weekly_multiple",
+        emotion="anxious",
+        has_communicated=False,
+        has_conflict=True,
+        description="舍友晚上打游戏声音很大，影响睡眠。",
+    ))
+
+    assert store.delete(saved_event.id) is True
+    assert store.list() == []
+
+
+def test_in_memory_event_store_returns_false_for_missing_event():
+    store = InMemoryEventStore()
+
+    assert store.delete("missing-event") is False
+
+
+def test_json_event_store_deletes_event_and_persists_remaining_records(tmp_path):
+    store_path = tmp_path / "events.json"
+    store = JsonEventStore(store_path)
+    first_event = store.add(EventRecordCreate(
+        event_date="2026-05-15",
+        event_type="noise",
+        severity=4,
+        frequency="weekly_multiple",
+        emotion="anxious",
+        has_communicated=False,
+        has_conflict=True,
+        description="舍友晚上打游戏声音很大，影响睡眠。",
+    ))
+    remaining_event = store.add(EventRecordCreate(
+        event_date="2026-05-14",
+        event_type="hygiene",
+        severity=2,
+        frequency="occasional",
+        emotion="helpless",
+        has_communicated=True,
+        has_conflict=False,
+        description="公共区域偶尔没人整理，但已经协商过一次。",
+    ))
+
+    assert store.delete(first_event.id) is True
+
+    restored_events = JsonEventStore(store_path).list()
+    assert [event.id for event in restored_events] == [remaining_event.id]
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_json_event_store_deletes_last_event_to_empty_archive(tmp_path):
+    store_path = tmp_path / "events.json"
+    store = JsonEventStore(store_path)
+    saved_event = store.add(EventRecordCreate(
+        event_date="2026-05-15",
+        event_type="noise",
+        severity=4,
+        frequency="weekly_multiple",
+        emotion="anxious",
+        has_communicated=False,
+        has_conflict=True,
+        description="舍友晚上打游戏声音很大，影响睡眠。",
+    ))
+
+    assert store.delete(saved_event.id) is True
+    assert JsonEventStore(store_path).list() == []
+
+
+def test_json_event_store_returns_false_for_missing_event(tmp_path):
+    store = JsonEventStore(tmp_path / "events.json")
+
+    assert store.delete("missing-event") is False
 
 
 def test_archive_pressure_single_event_stays_close_to_single_score():

@@ -2,11 +2,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
+import { ANALYSIS_RESULT_STORAGE_KEY } from '@/data/week1'
 import {
-  ANALYSIS_RESULT_STORAGE_KEY,
-  mockAnalyzeResult,
-} from '@/data/week1'
-import {
+  ARCHIVE_INSIGHT_CACHE_KEY,
   fetchArchiveAnalysis,
   fetchEventArchive,
   fetchArchiveInsight,
@@ -18,14 +16,28 @@ import {
   type ArchiveInsightResponse,
 } from '@/data/eventArchive'
 
-const ARCHIVE_INSIGHT_CACHE_KEY = 'dorm-harmony:archive-insight-cache:v1'
-
-const result = ref<ArchiveAnalysisResult>({
-  ...mockAnalyzeResult,
+const EMPTY_ARCHIVE_RESULT: ArchiveAnalysisResult = {
+  pressure_score: 0,
+  risk_level: 'stable',
+  risk_label: '关系平稳',
+  main_reasons: [],
+  main_sources: [],
+  emotion_keywords: [],
+  suggestion: '请先记录事件，系统会根据事件档案汇总宿舍关系压力。',
+  trend_message: '当前还没有记录事件，关系状态暂按“关系平稳”展示。',
+  recommend_simulation: false,
+  disclaimer: '本结果仅用于宿舍关系压力趋势提示，不作为心理诊断依据。',
+  is_demo: false,
+  demo_notice: '',
+  suggestions: ['请先记录事件，系统会根据事件档案汇总宿舍关系压力。'],
+  safety_notice: '本结果仅用于宿舍关系压力趋势提示，不作为医学或心理诊断依据。',
+  trend_notice: '当前还没有记录事件，关系状态暂按“关系平稳”展示。',
   event_count: 0,
   active_30d_count: 0,
   source_breakdown: [],
-})
+}
+
+const result = ref<ArchiveAnalysisResult>(EMPTY_ARCHIVE_RESULT)
 const archiveInsight = ref<ArchiveInsightResponse | null>(null)
 const isAnalysisLoading = ref(false)
 const analysisError = ref('')
@@ -347,15 +359,42 @@ onBeforeUnmount(() => {
       <p>
         基于事件档案内的所有记录，综合事件日期、频率、严重程度和沟通状态生成趋势提示。
       </p>
-      <p v-if="isAnalysisLoading" class="analysis-source-badge card-border">
+      <p
+        v-if="isAnalysisLoading"
+        class="analysis-source-badge card-border"
+        role="status"
+        aria-live="polite"
+      >
         正在加载事件档案总压力...
       </p>
-      <p v-else-if="analysisError" class="analysis-source-badge card-border">
+      <p v-else-if="analysisError" class="analysis-source-badge card-border" role="alert">
         {{ analysisError }}
       </p>
     </section>
 
-    <section v-if="!hasArchiveEvents && !isAnalysisLoading" class="analysis-empty-v2 pop-card pop-shadow page-pop-in">
+    <section
+      v-if="analysisError && !isAnalysisLoading"
+      class="analysis-empty-v2 pop-card pop-shadow page-pop-in"
+      role="alert"
+    >
+      <div class="material-symbol" aria-hidden="true">cloud_off</div>
+      <span class="risk-badge">加载失败</span>
+      <h2>总压力分析暂时无法加载</h2>
+      <p>{{ analysisError }}</p>
+      <div class="analysis-actions analysis-empty-actions">
+        <button class="primary-action pop-shadow" type="button" @click="loadArchiveAnalysis">
+          重新加载
+        </button>
+        <RouterLink class="secondary-action pop-shadow" :to="{ name: 'archive' }" role="button">
+          查看事件档案
+        </RouterLink>
+      </div>
+    </section>
+
+    <section
+      v-else-if="!hasArchiveEvents && !isAnalysisLoading"
+      class="analysis-empty-v2 pop-card pop-shadow page-pop-in"
+    >
       <div class="material-symbol" aria-hidden="true">sentiment_satisfied</div>
       <span class="risk-badge">关系平稳 (Score 0)</span>
       <h2>还没有事件记录</h2>
@@ -370,7 +409,10 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <section v-else class="analysis-v2-bento">
+    <section
+      v-else-if="hasArchiveEvents && !isAnalysisLoading"
+      class="analysis-v2-bento"
+    >
       <article
         class="analysis-gauge-card pop-card pop-shadow page-pop-in"
         :aria-label="`压力分数 ${result.pressure_score}/100`"
@@ -449,23 +491,23 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <div class="analysis-v2-divider" aria-hidden="true">
+    <div v-if="!isAnalysisLoading && !analysisError" class="analysis-v2-divider" aria-hidden="true">
       <svg fill="none" height="20" viewBox="0 0 200 20" width="200" xmlns="http://www.w3.org/2000/svg">
         <path d="M0 10C20 10 20 2 40 2C60 2 60 18 80 18C100 18 100 2 120 2C140 2 140 18 160 18C180 18 180 10 200 10" stroke="currentColor" stroke-linecap="round" stroke-width="4" />
       </svg>
     </div>
 
-    <section class="analysis-ai-section page-pop-in">
+    <section v-if="!isAnalysisLoading && !analysisError" class="analysis-ai-section page-pop-in">
       <h2>
         <span class="material-symbol" aria-hidden="true">auto_awesome</span>
         AI 心晴见解
       </h2>
 
-      <p v-if="insightStatus === 'loading'" class="ai-state">
+      <p v-if="insightStatus === 'loading'" class="ai-state" role="status" aria-live="polite">
         <span class="material-symbol" aria-hidden="true">progress_activity</span>
         正在生成：AI 心晴见解生成中……
       </p>
-      <p v-else-if="insightError" class="ai-state">
+      <p v-else-if="insightError" class="ai-state" role="alert">
         <span class="material-symbol" aria-hidden="true">cloud_off</span>
         {{ insightError }}
       </p>
