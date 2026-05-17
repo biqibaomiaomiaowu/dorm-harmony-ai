@@ -1579,9 +1579,15 @@ textarea:focus {
   padding: 12px 6px 6px;
 }
 
+.archive-event-slot {
+  display: flex;
+  min-width: 0;
+}
+
 .archive-event-card {
   position: relative;
   display: flex;
+  width: 100%;
   min-width: 0;
   min-height: 320px;
   flex-direction: column;
@@ -1671,35 +1677,36 @@ textarea:focus {
 }
 
 .archive-sticker-move {
-  transition: transform 360ms ease;
+  transition: transform 460ms cubic-bezier(0.2, 0, 0, 1);
+  transition-delay: var(--archive-reflow-delay, 0ms);
 }
 
-.event-sticker-grid .archive-event-card:nth-child(6n + 1) {
+.event-sticker-grid .archive-event-slot:nth-child(6n + 1) {
   --sticker-rotate: -2.4deg;
   --tape-rotate: -7deg;
 }
 
-.event-sticker-grid .archive-event-card:nth-child(6n + 2) {
+.event-sticker-grid .archive-event-slot:nth-child(6n + 2) {
   --sticker-rotate: 2deg;
   --tape-rotate: 5deg;
 }
 
-.event-sticker-grid .archive-event-card:nth-child(6n + 3) {
+.event-sticker-grid .archive-event-slot:nth-child(6n + 3) {
   --sticker-rotate: -1deg;
   --tape-rotate: 3deg;
 }
 
-.event-sticker-grid .archive-event-card:nth-child(6n + 4) {
+.event-sticker-grid .archive-event-slot:nth-child(6n + 4) {
   --sticker-rotate: 1.8deg;
   --tape-rotate: -5deg;
 }
 
-.event-sticker-grid .archive-event-card:nth-child(6n + 5) {
+.event-sticker-grid .archive-event-slot:nth-child(6n + 5) {
   --sticker-rotate: -1.6deg;
   --tape-rotate: 6deg;
 }
 
-.event-sticker-grid .archive-event-card:nth-child(6n) {
+.event-sticker-grid .archive-event-slot:nth-child(6n) {
   --sticker-rotate: 2.8deg;
   --tape-rotate: -2deg;
 }
