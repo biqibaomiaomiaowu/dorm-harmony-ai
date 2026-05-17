@@ -63,6 +63,52 @@ requireIncludes('src/router/index.ts', [
   'EventArchiveView.vue',
 ])
 
+requireIncludes('src/views/HomeView.vue', [
+  'fetchArchiveAnalysis',
+  'animatedMeterPercent',
+  'homeMeterWeatherIcon',
+  'animateHomeMeter',
+  'loadHomeMeterAnalysis',
+  'requestAnimationFrame',
+  'onBeforeUnmount',
+  '--home-meter-percent',
+  'homeMeterAnalysis.risk_label',
+  'homeMeterAnalysis.value.pressure_score',
+  'homeMeterAnalysis.trend_message',
+  '<Transition name="weather-icon-flip" mode="out-in">',
+  'const durationMs = 2200',
+])
+requireExcludes('src/styles/main.css', ['width: 68%;'])
+requireMatches('src/views/HomeView.vue', [
+  {
+    label: 'home meter starts at zero before animating to target',
+    pattern:
+      /animatedMeterPercent\.value\s*=\s*0[\s\S]*?const targetPercent = normalizeHomeMeterScore[\s\S]*?requestAnimationFrame/,
+  },
+  {
+    label: 'home meter fill uses animated CSS variable',
+    pattern: /class="meter-fill"[\s\S]*--home-meter-percent[\s\S]*animatedMeterPercent/,
+  },
+  {
+    label: 'home meter index displays animated value',
+    pattern: /Index:\s*\{\{\s*animatedMeterPercent\s*\}\}\/100/,
+  },
+  {
+    label: 'home meter loads archive analysis from backend before animating',
+    pattern: /async function loadHomeMeterAnalysis[\s\S]*?await fetchArchiveAnalysis\(\)[\s\S]*?animateHomeMeter\(\)/,
+  },
+  {
+    label: 'home weather icon is driven by animated pressure thresholds',
+    pattern:
+      /const homeMeterWeatherIcon = computed[\s\S]*?animatedMeterPercent\.value[\s\S]*?<= 30[\s\S]*?<= 60[\s\S]*?rainy/,
+  },
+])
+requireIncludes('src/styles/main.css', [
+  'weather-icon-flip-enter-active',
+  'weather-icon-flip-leave-active',
+  'rotateY',
+])
+
 requireIncludes('src/App.vue', ['事件档案', "name: 'archive'"])
 
 requireIncludes('src/views/RecordView.vue', [
