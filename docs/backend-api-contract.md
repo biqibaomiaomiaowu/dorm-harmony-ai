@@ -115,6 +115,34 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 }
 ```
 
+## v2 事件档案接口
+
+### GET /api/events/analysis
+
+状态：已实现。后端读取当前事件档案，并按当前评分模型重新计算总压力分析。
+
+响应字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `pressure_score` | number | 0-100 总压力值 |
+| `risk_level` | string | 风险等级代码：`stable`、`pressure`、`high`、`severe` |
+| `risk_label` | string | 风险等级中文标签 |
+| `main_sources` | string[] | 主要压力来源，来自 `source_breakdown[].label` |
+| `emotion_keywords` | string[] | 当前情绪关键词 |
+| `trend_message` | string | 事件档案压力趋势提示 |
+| `suggestion` | string | 下一步沟通或求助建议 |
+| `recommend_simulation` | boolean | 是否建议进入沟通演练 |
+| `disclaimer` | string | 非诊断性安全提示 |
+| `event_count` | number | 事件档案总条数 |
+| `active_30d_count` | number | 近 30 天事件数 |
+| `source_breakdown` | object[] | 按用户记录的 `event_type` 聚合后的压力贡献占比 |
+| `source_breakdown[].label` | string | 事件类型中文标签：噪音冲突、作息冲突、卫生冲突、费用冲突、隐私边界、情绪冲突 |
+| `source_breakdown[].percent` | number | 该事件类型贡献占比，返回项合计为 100 |
+| `source_breakdown[].contribution` | number | 该事件类型的压力贡献，按 `analyze_pressure(event).pressure_score * recency_weight` 聚合 |
+
+说明：`发生频率较高`、`尚未有效沟通`、`已出现争吵或冷战` 仍会通过单条事件压力分影响贡献值，但不会作为 `source_breakdown` 的独立类别返回。
+
 ## 第二阶段已实现 AI 接口
 
 以下内容为第二阶段朱春雯后端 AI 已实现接口。`/api/simulate` 与 `/api/review` 运行时通过 LangChain 调用 DeepSeek 官方 OpenAI 兼容 API，并返回便于前端展示的结构化响应。
@@ -277,6 +305,10 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 | `summary` | string | 表达总结 |
 | `strengths` | string[] | 表达优点 |
 | `risks` | string[] | 潜在问题 |
+| `performance_scores` | object | 表现总结评分 |
+| `performance_scores.clarity` | number | 表达清晰度，0-100 整数 |
+| `performance_scores.empathy` | number | 共情能力，0-100 整数 |
+| `performance_scores.resolution` | number | 问题解决度，0-100 整数 |
 | `rewritten_message` | string | 优化话术 |
 | `next_steps` | string[] | 后续行动建议 |
 | `safety_note` | string | 非诊断性安全提示 |
@@ -317,6 +349,11 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
     "可以进一步明确希望调整的时间范围",
     "如果对方回避，需要预留下一次沟通时间"
   ],
+  "performance_scores": {
+    "clarity": 82,
+    "empathy": 76,
+    "resolution": 71
+  },
   "rewritten_message": "我想和你商量一下，晚上 11 点后能不能戴耳机或调低音量？我最近睡眠受影响比较明显，也想一起找个不影响你娱乐的办法。",
   "next_steps": [
     "选择双方情绪平稳的时间沟通",
