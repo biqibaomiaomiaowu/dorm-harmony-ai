@@ -81,6 +81,24 @@ requireIncludes('src/views/EventArchiveView.vue', [
   'fetchEventArchive',
   '生成压力分析报告',
   "name: 'analysis'",
+  'archiveGridRef',
+  'data-event-id',
+  'archiveStickerPresentation',
+  'animateArchiveReflow',
+  'onBeforeUnmount',
+])
+requireExcludes('src/views/EventArchiveView.vue', ['stickerTone(pageStartIndex + index)'])
+requireMatches('src/views/EventArchiveView.vue', [
+  {
+    label: 'archive reflow animation uses before/after slot measurements',
+    pattern:
+      /collectArchiveSlotRects[\s\S]*?getBoundingClientRect[\s\S]*?animateArchiveReflow[\s\S]*?slot\.animate/,
+  },
+  {
+    label: 'archive sticker presentation is keyed by event id rather than current index',
+    pattern:
+      /--sticker-rotate[\s\S]*?archiveStickerPresentation\(event\.id\)\.rotate[\s\S]*?--tape-rotate[\s\S]*?archiveStickerPresentation\(event\.id\)\.tapeRotate[\s\S]*?archiveStickerPresentation\(event\.id\)\.tone/,
+  },
 ])
 
 requireIncludes('src/data/eventArchive.ts', [

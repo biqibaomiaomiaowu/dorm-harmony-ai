@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import {
@@ -20,7 +20,17 @@ const confirmingDeleteId = ref('')
 const deletingEventIds = ref<Set<string>>(new Set())
 const removingEventIds = ref<Set<string>>(new Set())
 const deleteError = ref('')
+const archiveGridRef = ref<HTMLElement | null>(null)
 const pageSize = 6
+const archiveStickerStyles = [
+  { tone: 'sticker-pink', rotate: '-2.4deg', tapeRotate: '-7deg' },
+  { tone: 'sticker-yellow', rotate: '2deg', tapeRotate: '5deg' },
+  { tone: 'sticker-purple', rotate: '-1deg', tapeRotate: '3deg' },
+  { tone: 'sticker-green', rotate: '1.8deg', tapeRotate: '-5deg' },
+  { tone: 'sticker-blue', rotate: '-1.6deg', tapeRotate: '6deg' },
+  { tone: 'sticker-cream', rotate: '2.8deg', tapeRotate: '-2deg' },
+] as const
+let archiveReflowAnimations: Animation[] = []
 
 const latestEventDate = computed(() => events.value[0]?.event_date ?? '暂无记录')
 const pageCount = computed(() => Math.max(1, Math.ceil(events.value.length / pageSize)))
@@ -61,9 +71,19 @@ function communicationLabel(value: boolean) {
   return value ? '已沟通' : '未沟通'
 }
 
-function stickerTone(index: number) {
-  const tones = ['sticker-pink', 'sticker-yellow', 'sticker-purple', 'sticker-green', 'sticker-blue', 'sticker-cream']
-  return tones[index % tones.length]
+function hashStickerId(eventId: string) {
+  let hash = 0
+
+  for (let index = 0; index < eventId.length; index += 1) {
+    hash = (hash * 31 + eventId.charCodeAt(index)) >>> 0
+  }
+
+  return hash
+}
+
+function archiveStickerPresentation(eventId: string) {
+  const styleIndex = hashStickerId(eventId) % archiveStickerStyles.length
+  return archiveStickerStyles[styleIndex] ?? archiveStickerStyles[0]
 }
 
 function isDeleting(eventId: string) {
@@ -88,11 +108,91 @@ function clearArchiveInsightCache() {
   }
 }
 
+function prefersReducedMotion() {
+  return (
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  )
+}
+
+function collectArchiveSlotRects() {
+  const rects = new Map<string, DOMRect>()
+  const slots = archiveGridRef.value?.querySelectorAll<HTMLElement>('[data-event-id]') ?? []
+
+  for (const slot of slots) {
+    const eventId = slot.dataset.eventId
+
+    if (eventId) {
+      rects.set(eventId, slot.getBoundingClientRect())
+    }
+  }
+
+  return rects
+}
+
+function cancelArchiveReflowAnimations() {
+  for (const animation of archiveReflowAnimations) {
+    animation.cancel()
+  }
+
+  archiveReflowAnimations = []
+}
+
+async function animateArchiveReflow(previousRects: Map<string, DOMRect>) {
+  await nextTick()
+
+  if (prefersReducedMotion()) {
+    return
+  }
+
+  const slots = archiveGridRef.value?.querySelectorAll<HTMLElement>('[data-event-id]') ?? []
+  let movedSlotIndex = 0
+
+  for (const slot of slots) {
+    const eventId = slot.dataset.eventId
+    const previousRect = eventId ? previousRects.get(eventId) : undefined
+
+    if (!previousRect || typeof slot.animate !== 'function') {
+      continue
+    }
+
+    const currentRect = slot.getBoundingClientRect()
+    const deltaX = previousRect.left - currentRect.left
+    const deltaY = previousRect.top - currentRect.top
+
+    if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) {
+      continue
+    }
+
+    const animation = slot.animate(
+      [
+        { opacity: 0.92, transform: `translate(${deltaX}px, ${deltaY}px)` },
+        { opacity: 1, transform: 'translate(0, 0)' },
+      ],
+      {
+        delay: movedSlotIndex * 70,
+        duration: 520,
+        easing: 'cubic-bezier(0.2, 0, 0, 1)',
+        fill: 'both',
+      },
+    )
+
+    animation.addEventListener('finish', () => {
+      archiveReflowAnimations = archiveReflowAnimations.filter((item) => item !== animation)
+    })
+    archiveReflowAnimations.push(animation)
+    movedSlotIndex += 1
+  }
+}
+
 function removeEventAfterAnimation(eventId: string) {
+  cancelArchiveReflowAnimations()
+  const previousRects = collectArchiveSlotRects()
   events.value = events.value.filter((event) => event.id !== eventId)
   removingEventIds.value = cloneIdSet(removingEventIds.value, eventId, 'delete')
   confirmingDeleteId.value = ''
   currentPage.value = Math.min(currentPage.value, pageCount.value)
+  void animateArchiveReflow(previousRects)
 }
 
 async function requestDeleteEvent(event: EventRecord) {
@@ -156,6 +256,10 @@ async function loadArchive() {
 
 onMounted(() => {
   void loadArchive()
+})
+
+onBeforeUnmount(() => {
+  cancelArchiveReflowAnimations()
 })
 </script>
 
@@ -259,18 +363,23 @@ onMounted(() => {
         </RouterLink>
       </div>
 
-      <TransitionGroup v-else name="archive-sticker" tag="div" class="event-sticker-grid">
+      <div v-else ref="archiveGridRef" class="event-sticker-grid">
         <article
           v-for="(event, index) in pagedEvents"
           :key="event.id"
           class="archive-event-slot"
-          :style="{ '--archive-reflow-delay': `${index * 70}ms` }"
+          :data-event-id="event.id"
+          :style="{
+            '--archive-reflow-delay': `${index * 70}ms`,
+            '--sticker-rotate': archiveStickerPresentation(event.id).rotate,
+            '--tape-rotate': archiveStickerPresentation(event.id).tapeRotate,
+          }"
         >
           <div
             :class="[
               'archive-event-card',
               'event-sticker-card',
-              stickerTone(pageStartIndex + index),
+              archiveStickerPresentation(event.id).tone,
               {
                 'archive-event-card-confirming': confirmingDeleteId === event.id,
                 'archive-event-card-deleting': isDeleting(event.id),
@@ -316,7 +425,7 @@ onMounted(() => {
             </div>
           </div>
         </article>
-      </TransitionGroup>
+      </div>
     </section>
   </main>
 </template>
