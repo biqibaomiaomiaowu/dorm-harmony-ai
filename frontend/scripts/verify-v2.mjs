@@ -194,7 +194,12 @@ requireMatches('src/views/AnalysisView.vue', [
   {
     label: 'loadArchiveAnalysis exits before animating after unmount',
     pattern:
-      /await nextTick\(\)[\s\S]*?if \(!isAnalysisViewActive\) \{[\s\S]*?return[\s\S]*?\}[\s\S]*?animateAnalysisProgress\(\)/,
+      /isAnalysisLoading\.value = false[\s\S]*?await nextTick\(\)[\s\S]*?if \(!isAnalysisViewActive\) \{[\s\S]*?return[\s\S]*?\}[\s\S]*?animateAnalysisProgress\(\)/,
+  },
+  {
+    label: 'archive insight loads after analysis animation is started',
+    pattern:
+      /animateAnalysisProgress\(\)[\s\S]*?void loadArchiveInsightForCurrentArchive\(response\.event_count\)/,
   },
   {
     label: 'animation step stops when view is inactive',
@@ -206,6 +211,17 @@ requireMatches('src/views/AnalysisView.vue', [
     pattern:
       /onBeforeUnmount\(\(\) => \{[\s\S]*?isAnalysisViewActive = false[\s\S]*?cancelAnimationFrame\(analysisAnimationFrame\)/,
   },
+])
+requireIncludes('src/views/AnalysisView.vue', [
+  '<Transition name="analysis-ai-panel" mode="out-in">',
+  'analysis-ai-grid-reveal',
+  '--analysis-ai-delay',
+  'ai-state-loading',
+])
+requireIncludes('src/styles/main.css', [
+  'analysis-ai-panel-enter-active',
+  'analysis-ai-panel-leave-active',
+  'analysis-ai-card-reveal',
 ])
 
 requireIncludes('src/views/SimulationView.vue', [
@@ -230,11 +246,41 @@ requireIncludes('src/views/ReviewView.vue', [
   'storedDialogue',
   '完整对话',
   'performance_scores',
+  'hasReviewResult',
+  '<Transition name="review-result-transition" mode="out-in">',
+  'review-result-stack',
+  'review-card-reveal-item',
+  '--review-card-delay',
+  'animatedPerformanceScores',
+  'animateReviewScores',
+  'requestAnimationFrame',
+  'onBeforeUnmount',
   'latestUserMessage',
   '暂无本轮用户输入',
   'reviewResponse.value.performance_scores.clarity',
   'reviewResponse.value.performance_scores.empathy',
   'reviewResponse.value.performance_scores.resolution',
+])
+requireIncludes('src/styles/main.css', [
+  'review-state-transition-enter-active',
+  'review-result-transition-enter-active',
+  'review-card-reveal',
+])
+requireMatches('src/views/ReviewView.vue', [
+  {
+    label: 'review score cards display animated values',
+    pattern: /<strong>\s*\{\{\s*card\.animatedValue\s*\}\}%\s*<\/strong>/,
+  },
+  {
+    label: 'review score animation starts from zero after response is available',
+    pattern:
+      /animatedPerformanceScores\.value\s*=\s*\{ clarity: 0, empathy: 0, resolution: 0 \}[\s\S]*?requestAnimationFrame/,
+  },
+  {
+    label: 'live review response mounts result before score animation',
+    pattern:
+      /reviewResponse\.value = result[\s\S]*?isLoading\.value = false[\s\S]*?await nextTick\(\)[\s\S]*?animateReviewScores\(\)/,
+  },
 ])
 requireExcludes('src/views/ReviewView.vue', [
   'const scoreFallback',

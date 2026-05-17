@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import {
@@ -55,10 +55,13 @@ const defaultRewriteSuggestion: ReviewRewriteSuggestion = {
 // 复盘维度 感受表达 沟通空间 优化后的沟通话术 表达总结 表达优点 潜在问题 优化话术 后续行动建议 安全提示.
 
 const reviewError = ref('')
-const isLoading = ref(false)
+const isLoading = ref(true)
 const storedDialogue = ref<ReviewDialogueLine[]>([])
 const reviewRequest = ref<ReviewRequest>({ scenario: '沟通复盘场景', dialogue: [] })
 const reviewResponse = ref<ReviewResponse>(buildDemoReviewResponse('复盘页初始化', reviewRequest.value))
+const animatedPerformanceScores = ref({ clarity: 0, empathy: 0, resolution: 0 })
+let reviewScoresAnimationFrame = 0
+let isReviewViewActive = false
 
 function isRecord(value: unknown): value is RecordLike {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -278,6 +281,7 @@ const dialogueStats = computed(() => {
     roommateReplies: dialogue.filter((line) => line.speaker.startsWith('roommate_')).length,
   }
 })
+const hasReviewResult = computed(() => !isLoading.value && !reviewError.value)
 
 function normalizeReviewScore(value: number): number {
   if (!Number.isFinite(value)) {
@@ -285,6 +289,76 @@ function normalizeReviewScore(value: number): number {
   }
 
   return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function prefersReducedMotion() {
+  return (
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  )
+}
+
+function targetPerformanceScores() {
+  return {
+    clarity: normalizeReviewScore(reviewResponse.value.performance_scores.clarity),
+    empathy: normalizeReviewScore(reviewResponse.value.performance_scores.empathy),
+    resolution: normalizeReviewScore(reviewResponse.value.performance_scores.resolution),
+  }
+}
+
+function cancelReviewScoreAnimation() {
+  if (reviewScoresAnimationFrame) {
+    window.cancelAnimationFrame(reviewScoresAnimationFrame)
+    reviewScoresAnimationFrame = 0
+  }
+}
+
+function applyFinalReviewScores() {
+  animatedPerformanceScores.value = targetPerformanceScores()
+}
+
+function animateReviewScores() {
+  if (!isReviewViewActive) {
+    return
+  }
+
+  cancelReviewScoreAnimation()
+
+  if (prefersReducedMotion()) {
+    applyFinalReviewScores()
+    return
+  }
+
+  animatedPerformanceScores.value = { clarity: 0, empathy: 0, resolution: 0 }
+
+  const targetScores = targetPerformanceScores()
+  const durationMs = 720
+  const startTime = window.performance.now()
+
+  const step = (currentTime: number) => {
+    if (!isReviewViewActive) {
+      reviewScoresAnimationFrame = 0
+      return
+    }
+
+    const elapsed = currentTime - startTime
+    const progress = Math.min(1, elapsed / durationMs)
+    const easedProgress = 1 - (1 - progress) ** 3
+
+    animatedPerformanceScores.value = {
+      clarity: Math.round(targetScores.clarity * easedProgress),
+      empathy: Math.round(targetScores.empathy * easedProgress),
+      resolution: Math.round(targetScores.resolution * easedProgress),
+    }
+
+    if (progress < 1) {
+      reviewScoresAnimationFrame = window.requestAnimationFrame(step)
+    } else {
+      reviewScoresAnimationFrame = 0
+    }
+  }
+
+  reviewScoresAnimationFrame = window.requestAnimationFrame(step)
 }
 
 function hydrateStoredReview(payload: ReviewRequest): ReviewResponse | null {
@@ -327,18 +401,21 @@ const scoreCards = computed(() => [
   {
     title: 'Clarity',
     value: normalizeReviewScore(reviewResponse.value.performance_scores.clarity),
+    animatedValue: animatedPerformanceScores.value.clarity,
     description: '表达清晰度',
     tone: 'clarity',
   },
   {
     title: 'Empathy',
     value: normalizeReviewScore(reviewResponse.value.performance_scores.empathy),
+    animatedValue: animatedPerformanceScores.value.empathy,
     description: '共情能力',
     tone: 'empathy',
   },
   {
     title: 'Resolution',
     value: normalizeReviewScore(reviewResponse.value.performance_scores.resolution),
+    animatedValue: animatedPerformanceScores.value.resolution,
     description: '问题解决度',
     tone: 'resolution',
   },
@@ -406,12 +483,17 @@ async function initReview() {
   if (cached) {
     reviewResponse.value = cached
     isLoading.value = false
+    await nextTick()
+    animateReviewScores()
     return
   }
 
   try {
     const result = await submitReviewRequest(reviewRequest.value)
     reviewResponse.value = result
+    isLoading.value = false
+    await nextTick()
+    animateReviewScores()
 
     try {
       localStorage.setItem(
@@ -427,12 +509,20 @@ async function initReview() {
   } catch {
     reviewError.value = '复盘生成失败，请返回模拟页后重试'
   } finally {
-    isLoading.value = false
+    if (isLoading.value) {
+      isLoading.value = false
+    }
   }
 }
 
 onMounted(() => {
+  isReviewViewActive = true
   void initReview()
+})
+
+onBeforeUnmount(() => {
+  isReviewViewActive = false
+  cancelReviewScoreAnimation()
 })
 
 </script>
@@ -465,25 +555,40 @@ onMounted(() => {
         </div>
       </section>
 
-      <p v-if="isLoading" class="review-state-pill pop-shadow">正在生成复盘...</p>
-      <p v-else-if="reviewError" class="review-state-pill review-state-error pop-shadow">
-        {{ reviewError }}
-      </p>
-      <p v-else-if="reviewResponse.is_demo" class="review-state-pill pop-shadow">
-        {{ reviewResponse.demo_notice || '演示复盘（未接入后端）' }}
-      </p>
+      <Transition name="review-state-transition" mode="out-in">
+        <p v-if="isLoading" key="loading" class="review-state-pill pop-shadow">
+          正在生成复盘...
+        </p>
+        <p
+          v-else-if="reviewError"
+          key="error"
+          class="review-state-pill review-state-error pop-shadow"
+        >
+          {{ reviewError }}
+        </p>
+        <p v-else-if="reviewResponse.is_demo" key="demo" class="review-state-pill pop-shadow">
+          {{ reviewResponse.demo_notice || '演示复盘（未接入后端）' }}
+        </p>
+      </Transition>
 
-      <section class="review-v2-section page-pop-in">
+      <Transition name="review-result-transition" mode="out-in">
+        <div v-if="hasReviewResult" class="review-result-stack">
+      <section class="review-v2-section">
         <h2>表现总结</h2>
         <div class="review-score-grid">
           <article
-            v-for="card in scoreCards"
+            v-for="(card, index) in scoreCards"
             :key="card.title"
-            :class="['review-score-card', `review-score-card-${card.tone}`]"
+            :class="[
+              'review-score-card',
+              'review-card-reveal-item',
+              `review-score-card-${card.tone}`,
+            ]"
+            :style="{ '--review-card-delay': `${index * 80}ms` }"
           >
             <span aria-hidden="true"></span>
             <div class="review-score-ring">
-              <strong>{{ card.value }}%</strong>
+              <strong>{{ card.animatedValue }}%</strong>
             </div>
             <h3>{{ card.title }}</h3>
             <p>{{ card.description }}</p>
@@ -493,7 +598,7 @@ onMounted(() => {
 
       <div class="review-squiggle" aria-hidden="true"></div>
 
-      <section class="review-v2-section page-pop-in">
+      <section class="review-v2-section">
         <h2>完整对话摘要</h2>
         <div class="review-dialogue-list">
           <template
@@ -524,11 +629,14 @@ onMounted(() => {
 
       <div class="review-squiggle" aria-hidden="true"></div>
 
-      <section class="review-v2-section page-pop-in">
+      <section class="review-v2-section">
         <h2>闪光点与注意点</h2>
         <div class="review-highlight-grid">
           <div class="review-highlight-column">
-            <article class="review-sticker-card review-sticker-good pop-card pop-shadow">
+            <article
+              class="review-sticker-card review-sticker-good review-card-reveal-item pop-card pop-shadow"
+              style="--review-card-delay: 180ms"
+            >
               <div class="review-sticker-badge">
                 <span class="material-symbol" aria-hidden="true">thumb_up</span>
               </div>
@@ -539,7 +647,10 @@ onMounted(() => {
                 </li>
               </ul>
             </article>
-            <article class="review-sticker-card review-sticker-good pop-card pop-shadow">
+            <article
+              class="review-sticker-card review-sticker-good review-card-reveal-item pop-card pop-shadow"
+              style="--review-card-delay: 260ms"
+            >
               <div class="review-sticker-badge">
                 <span class="material-symbol" aria-hidden="true">favorite</span>
               </div>
@@ -549,7 +660,10 @@ onMounted(() => {
           </div>
 
           <div class="review-highlight-column">
-            <article class="review-sticker-card review-sticker-risk pop-card pop-shadow">
+            <article
+              class="review-sticker-card review-sticker-risk review-card-reveal-item pop-card pop-shadow"
+              style="--review-card-delay: 340ms"
+            >
               <div class="review-sticker-badge">
                 <span class="material-symbol" aria-hidden="true">priority_high</span>
               </div>
@@ -560,7 +674,10 @@ onMounted(() => {
                 </li>
               </ul>
             </article>
-            <article class="review-sticker-card review-sticker-risk pop-card pop-shadow">
+            <article
+              class="review-sticker-card review-sticker-risk review-card-reveal-item pop-card pop-shadow"
+              style="--review-card-delay: 420ms"
+            >
               <div class="review-sticker-badge">
                 <span class="material-symbol" aria-hidden="true">hearing</span>
               </div>
@@ -573,7 +690,7 @@ onMounted(() => {
 
       <div class="review-squiggle" aria-hidden="true"></div>
 
-      <section class="review-v2-section review-script-section page-pop-in">
+      <section class="review-v2-section review-script-section">
         <h2>建议话术</h2>
         <div class="speech-rewrite-row pop-card pop-shadow">
           <article class="speech-before">
@@ -608,6 +725,8 @@ onMounted(() => {
       <p class="review-note">
         {{ reviewResponse.safety_note || '本建议仅用于沟通练习，不作为心理诊断依据；如存在现实安全风险，请优先寻求线下支持。' }}
       </p>
+        </div>
+      </Transition>
     </div>
   </main>
 </template>

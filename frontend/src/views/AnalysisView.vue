@@ -283,6 +283,34 @@ async function loadArchiveInsight(archiveSignature: string) {
   }
 }
 
+async function loadArchiveInsightForCurrentArchive(eventCount: number) {
+  if (eventCount <= 0) {
+    insightStatus.value = 'idle'
+    return
+  }
+
+  insightStatus.value = 'loading'
+  insightError.value = ''
+
+  try {
+    const archive = await fetchEventArchive()
+
+    if (!isAnalysisViewActive) {
+      return
+    }
+
+    await loadArchiveInsight(buildArchiveSignature(archive.events))
+  } catch (error) {
+    if (!isAnalysisViewActive) {
+      return
+    }
+
+    insightStatus.value = 'error'
+    insightError.value =
+      error instanceof Error ? error.message : 'AI 心晴见解暂时不可用，请稍后重试。'
+  }
+}
+
 async function loadArchiveAnalysis() {
   isAnalysisLoading.value = true
   analysisError.value = ''
@@ -298,13 +326,6 @@ async function loadArchiveAnalysis() {
     }
 
     result.value = normalizeArchiveAnalysisResponse(response)
-    await nextTick()
-
-    if (!isAnalysisViewActive) {
-      return
-    }
-
-    animateAnalysisProgress()
 
     try {
       localStorage.setItem(ANALYSIS_RESULT_STORAGE_KEY, JSON.stringify(result.value))
@@ -312,15 +333,15 @@ async function loadArchiveAnalysis() {
       // Restricted browser sessions may block localStorage; the page still has live data.
     }
 
-    if (response.event_count > 0) {
-      const archive = await fetchEventArchive()
+    isAnalysisLoading.value = false
+    await nextTick()
 
-      if (!isAnalysisViewActive) {
-        return
-      }
-
-      await loadArchiveInsight(buildArchiveSignature(archive.events))
+    if (!isAnalysisViewActive) {
+      return
     }
+
+    animateAnalysisProgress()
+    void loadArchiveInsightForCurrentArchive(response.event_count)
   } catch (error) {
     if (!isAnalysisViewActive) {
       return
@@ -329,7 +350,7 @@ async function loadArchiveAnalysis() {
     analysisError.value =
       error instanceof Error ? error.message : '总压力分析加载失败，请稍后重试'
   } finally {
-    if (isAnalysisViewActive) {
+    if (isAnalysisViewActive && isAnalysisLoading.value) {
       isAnalysisLoading.value = false
     }
   }
@@ -503,43 +524,63 @@ onBeforeUnmount(() => {
         AI 心晴见解
       </h2>
 
-      <p v-if="insightStatus === 'loading'" class="ai-state" role="status" aria-live="polite">
-        <span class="material-symbol" aria-hidden="true">progress_activity</span>
-        正在生成：AI 心晴见解生成中……
-      </p>
-      <p v-else-if="insightError" class="ai-state" role="alert">
-        <span class="material-symbol" aria-hidden="true">cloud_off</span>
-        {{ insightError }}
-      </p>
-      <div v-else-if="archiveInsight" class="analysis-ai-grid">
-        <article class="analysis-ai-card pop-card pop-shadow">
-          <span class="material-symbol" aria-hidden="true">visibility</span>
-          <h3>整体观察</h3>
-          <p>{{ archiveInsight.insight }}</p>
-        </article>
-        <article class="analysis-ai-card pop-card pop-shadow">
-          <span class="material-symbol" aria-hidden="true">favorite</span>
-          <h3>自我照顾建议</h3>
-          <p>{{ archiveInsight.care_suggestion }}</p>
-        </article>
-        <article class="analysis-ai-card pop-card pop-shadow">
-          <span class="material-symbol" aria-hidden="true">forum</span>
-          <h3>沟通重点列表</h3>
-          <ul>
-            <li v-for="item in archiveInsight.communication_focus" :key="item">
-              {{ item }}
-            </li>
-          </ul>
-        </article>
-        <article class="analysis-ai-card analysis-ai-card-warning pop-card pop-shadow">
-          <span class="material-symbol" aria-hidden="true">warning</span>
-          <h3>安全提示</h3>
-          <p>{{ archiveInsight.safety_note }}</p>
-        </article>
-      </div>
-      <p v-else class="ai-state">
-        请先记录一条宿舍事件以生成 AI 心晴见解。
-      </p>
+      <Transition name="analysis-ai-panel" mode="out-in">
+        <p
+          v-if="insightStatus === 'loading'"
+          key="loading"
+          class="ai-state ai-state-loading"
+          role="status"
+          aria-live="polite"
+        >
+          <span class="material-symbol" aria-hidden="true">progress_activity</span>
+          正在生成：AI 心晴见解生成中……
+        </p>
+        <p v-else-if="insightError" key="error" class="ai-state" role="alert">
+          <span class="material-symbol" aria-hidden="true">cloud_off</span>
+          {{ insightError }}
+        </p>
+        <div v-else-if="archiveInsight" key="ready" class="analysis-ai-grid analysis-ai-grid-reveal">
+          <article
+            class="analysis-ai-card pop-card pop-shadow"
+            style="--analysis-ai-delay: 0ms"
+          >
+            <span class="material-symbol" aria-hidden="true">visibility</span>
+            <h3>整体观察</h3>
+            <p>{{ archiveInsight.insight }}</p>
+          </article>
+          <article
+            class="analysis-ai-card pop-card pop-shadow"
+            style="--analysis-ai-delay: 80ms"
+          >
+            <span class="material-symbol" aria-hidden="true">favorite</span>
+            <h3>自我照顾建议</h3>
+            <p>{{ archiveInsight.care_suggestion }}</p>
+          </article>
+          <article
+            class="analysis-ai-card pop-card pop-shadow"
+            style="--analysis-ai-delay: 160ms"
+          >
+            <span class="material-symbol" aria-hidden="true">forum</span>
+            <h3>沟通重点列表</h3>
+            <ul>
+              <li v-for="item in archiveInsight.communication_focus" :key="item">
+                {{ item }}
+              </li>
+            </ul>
+          </article>
+          <article
+            class="analysis-ai-card analysis-ai-card-warning pop-card pop-shadow"
+            style="--analysis-ai-delay: 240ms"
+          >
+            <span class="material-symbol" aria-hidden="true">warning</span>
+            <h3>安全提示</h3>
+            <p>{{ archiveInsight.safety_note }}</p>
+          </article>
+        </div>
+        <p v-else key="empty" class="ai-state">
+          请先记录一条宿舍事件以生成 AI 心晴见解。
+        </p>
+      </Transition>
 
       <div class="analysis-actions analysis-v2-actions">
         <RouterLink
