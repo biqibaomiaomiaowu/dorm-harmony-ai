@@ -1639,19 +1639,12 @@ textarea:focus {
   border-radius: 16px 0 16px 0;
   background: var(--error-soft);
   color: var(--error);
-  padding: 8px 0 0 8px;
+  padding: 4px 0 0 9px;
 }
 
-.archive-delete-corner .material-symbol {
-  font-size: 1.1rem;
-  font-weight: 700;
-}
-
-.archive-delete-text {
-  position: absolute;
-  left: 8px;
-  bottom: 7px;
-  font-size: 0.62rem;
+.archive-delete-mark {
+  font-family: Outfit, system-ui, sans-serif;
+  font-size: 2.15rem;
   font-weight: 900;
   line-height: 1;
 }

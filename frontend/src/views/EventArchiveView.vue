@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import {
@@ -40,6 +40,60 @@ const recentEventCount = computed(() => {
     return Number.isFinite(eventDate.getTime()) && today.getTime() - eventDate.getTime() <= thirtyDaysMs
   }).length
 })
+
+function measureStickerPositions() {
+  const stickers = document.querySelectorAll<HTMLElement>('.archive-event-card[data-event-id]')
+
+  return new Map(
+    [...stickers].map((sticker) => [
+      sticker.dataset.eventId ?? '',
+      sticker.getBoundingClientRect(),
+    ]),
+  )
+}
+
+function animateStickerReflow(previousPositions: Map<string, DOMRect>) {
+  const stickers = [...document.querySelectorAll<HTMLElement>('.archive-event-card[data-event-id]')]
+
+  stickers.forEach((sticker, index) => {
+    const eventId = sticker.dataset.eventId
+    if (!eventId) {
+      return
+    }
+
+    const previousPosition = previousPositions.get(eventId)
+    if (!previousPosition) {
+      return
+    }
+
+    const nextPosition = sticker.getBoundingClientRect()
+    const deltaX = previousPosition.left - nextPosition.left
+    const deltaY = previousPosition.top - nextPosition.top
+
+    if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) {
+      return
+    }
+
+    const baseTransform = window.getComputedStyle(sticker).transform
+    const finalTransform = baseTransform === 'none' ? 'none' : baseTransform
+    const startTransform =
+      baseTransform === 'none'
+        ? `translate(${deltaX}px, ${deltaY}px)`
+        : `translate(${deltaX}px, ${deltaY}px) ${baseTransform}`
+
+    sticker.animate(
+      [
+        { transform: startTransform },
+        { transform: finalTransform },
+      ],
+      {
+        duration: 360,
+        delay: index * 55,
+        easing: 'cubic-bezier(0.2, 0, 0, 1)',
+      },
+    )
+  })
+}
 
 function eventTitle(event: EventRecord) {
   return eventTypeLabels[event.event_type] ?? event.event_type
@@ -88,11 +142,16 @@ function clearArchiveInsightCache() {
   }
 }
 
-function removeEventAfterAnimation(eventId: string) {
+async function removeEventAfterAnimation(eventId: string) {
+  const previousPositions = measureStickerPositions()
+
   events.value = events.value.filter((event) => event.id !== eventId)
   removingEventIds.value = cloneIdSet(removingEventIds.value, eventId, 'delete')
   confirmingDeleteId.value = ''
   currentPage.value = Math.min(currentPage.value, pageCount.value)
+
+  await nextTick()
+  animateStickerReflow(previousPositions)
 }
 
 async function requestDeleteEvent(event: EventRecord) {
@@ -126,7 +185,7 @@ function handleStickerAnimationEnd(event: AnimationEvent, eventId: string) {
     event.currentTarget === event.target &&
     isRemoving(eventId)
   ) {
-    removeEventAfterAnimation(eventId)
+    void removeEventAfterAnimation(eventId)
   }
 }
 
@@ -263,6 +322,7 @@ onMounted(() => {
         <article
           v-for="(event, index) in pagedEvents"
           :key="event.id"
+          :data-event-id="event.id"
           :class="[
             'archive-event-card',
             'event-sticker-card',
@@ -286,18 +346,7 @@ onMounted(() => {
             "
             @click="requestDeleteEvent(event)"
           >
-            <span class="material-symbol" aria-hidden="true">
-              {{
-                isDeleting(event.id)
-                  ? 'hourglass_top'
-                  : confirmingDeleteId === event.id
-                    ? 'check'
-                    : 'close'
-              }}
-            </span>
-            <span class="archive-delete-text">
-              {{ confirmingDeleteId === event.id ? '确认' : '删除' }}
-            </span>
+            <span class="archive-delete-mark" aria-hidden="true">×</span>
           </button>
 
           <span class="sticker-date">
