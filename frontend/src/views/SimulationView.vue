@@ -463,6 +463,7 @@ function resetConversation() {
           class="scene-btn pop-shadow"
           :class="{ active: scene === currentScene }"
           type="button"
+          :aria-pressed="scene === currentScene"
           @click="selectScenario(scene)"
         >
           {{ scene }}
@@ -511,7 +512,7 @@ function resetConversation() {
             </div>
             <p class="roommate-says">（戴上耳机，翻个身背对你，不说话）</p>
           </article>
-          <article class="roommate-card card-border pop-card roommate-active">
+          <article class="roommate-card card-border pop-card">
             <div class="roommate-badge roommate-badge-harmony">
               <span class="material-symbol" aria-hidden="true">favorite</span>
             </div>
@@ -548,49 +549,63 @@ function resetConversation() {
             {{ currentScenePrompt }}
           </p>
 
-          <div v-if="conversationMessages.length > 0" class="conversation-thread">
-            <article
-              v-for="(line, index) in conversationMessages"
-              :key="`${line.speaker}-${index}-${line.message}`"
-              :class="['conversation-message', messageClass(line.speaker)]"
+          <Transition name="chat-state" mode="out-in">
+            <TransitionGroup
+              v-if="conversationMessages.length > 0"
+              key="thread"
+              name="chat-message"
+              tag="div"
+              class="conversation-thread"
             >
-              <span>{{ speakerLabel(line.speaker) }}</span>
-              <p>{{ line.message }}</p>
-            </article>
-            <article v-if="isSubmitting" class="conversation-message conversation-message-roommate">
-              <span>{{ generationStatus || '正在生成舍友回复...' }}</span>
-              <p class="typing-indicator" aria-live="polite">
-                <i></i>
-                <i></i>
-                <i></i>
-              </p>
-            </article>
-          </div>
+              <article
+                v-for="(line, index) in conversationMessages"
+                :key="`${line.speaker}-${index}-${line.message}`"
+                :class="['conversation-message', messageClass(line.speaker)]"
+              >
+                <span>{{ speakerLabel(line.speaker) }}</span>
+                <p>{{ line.message }}</p>
+              </article>
+              <article
+                v-if="isSubmitting"
+                key="typing"
+                class="conversation-message conversation-message-roommate"
+              >
+                <span>{{ generationStatus || '正在生成舍友回复...' }}</span>
+                <p class="typing-indicator" aria-live="polite">
+                  <i></i>
+                  <i></i>
+                  <i></i>
+                </p>
+              </article>
+            </TransitionGroup>
 
-          <article v-else class="chat-user" :class="{ 'chat-user-empty': !hasUserMessage }">
-            <img
-              class="chat-avatar"
-              alt=""
-              aria-hidden="true"
-              :src="
-                'https://lh3.googleusercontent.com/aida-public/AB6AXuBJCY4H0EjAxeuZ78DN3JrYsAy42cqUaZQaWt1Wq2JWHTPOoyn4mlZrybfWe_rmUsx13ULRLgZNsUN7mZoSEXX0vqtHQTW_qx_gFtLF91ylQl_nIedDSmJxr9g6dqPnhlTz5XrTKmVmZnB6RT586DEXb122JBJ9QF-rjTrL-ptfWXnlooad8kRFSMnfgLJJfY0xHIuyCz8-ielL8ZiobKlyFYkQT35aoKSOLs63e8WoBtT5UlpQiO5MJ2HpuLQs7GODYSqaqBxtgyc'
-              "
-            />
-            <p class="chat-bubble chat-bubble-user pop-shadow">
-              {{ userMessage }}
-            </p>
-          </article>
+            <div v-else key="preview" class="chat-preview-state">
+              <article class="chat-user" :class="{ 'chat-user-empty': !hasUserMessage }">
+                <img
+                  class="chat-avatar"
+                  alt=""
+                  aria-hidden="true"
+                  :src="
+                    'https://lh3.googleusercontent.com/aida-public/AB6AXuBJCY4H0EjAxeuZ78DN3JrYsAy42cqUaZQaWt1Wq2JWHTPOoyn4mlZrybfWe_rmUsx13ULRLgZNsUN7mZoSEXX0vqtHQTW_qx_gFtLF91ylQl_nIedDSmJxr9g6dqPnhlTz5XrTKmVmZnB6RT586DEXb122JBJ9QF-rjTrL-ptfWXnlooad8kRFSMnfgLJJfY0xHIuyCz8-ielL8ZiobKlyFYkQT35aoKSOLs63e8WoBtT5UlpQiO5MJ2HpuLQs7GODYSqaqBxtgyc'
+                  "
+                />
+                <p class="chat-bubble chat-bubble-user pop-shadow">
+                  {{ userMessage }}
+                </p>
+              </article>
 
-          <div v-if="conversationMessages.length === 0" class="chat-message-list">
-            <article
-              v-for="reply in replies"
-              :key="`${reply.roommate}-${reply.personality}`"
-              class="chat-bubble card-border pop-card"
-            >
-              <p class="chat-role">{{ reply.roommate }}（{{ reply.personality }}）</p>
-              <p>{{ reply.message }}</p>
-            </article>
-          </div>
+              <div class="chat-message-list">
+                <article
+                  v-for="reply in replies"
+                  :key="`${reply.roommate}-${reply.personality}`"
+                  class="chat-bubble card-border pop-card"
+                >
+                  <p class="chat-role">{{ reply.roommate }}（{{ reply.personality }}）</p>
+                  <p>{{ reply.message }}</p>
+                </article>
+              </div>
+            </div>
+          </Transition>
 
           <div class="chat-hint card-border pop-card">
             <p class="chat-hint-label">

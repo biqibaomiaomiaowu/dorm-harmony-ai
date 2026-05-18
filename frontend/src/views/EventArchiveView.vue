@@ -13,7 +13,7 @@ import {
 } from '@/data/eventArchive'
 
 const events = ref<EventRecord[]>([])
-const isLoading = ref(false)
+const isLoading = ref(true)
 const loadError = ref('')
 const currentPage = ref(1)
 const confirmingDeleteId = ref('')
@@ -346,86 +346,91 @@ onBeforeUnmount(() => {
         {{ loadError || deleteError }}
       </p>
 
-      <div
-        v-if="isLoading && events.length === 0"
-        class="archive-empty card-border"
-        role="status"
-        aria-live="polite"
-      >
-        正在加载事件档案...
-      </div>
-
-      <div v-else-if="events.length === 0" class="archive-empty card-border">
-        <span class="material-symbol" aria-hidden="true">inventory_2</span>
-        <h3>还没有事件记录，请先记录一条宿舍事件。</h3>
-        <RouterLink class="primary-action pop-shadow" :to="{ name: 'record' }">
-          去记录事件
-        </RouterLink>
-      </div>
-
-      <div v-else ref="archiveGridRef" class="event-sticker-grid">
-        <article
-          v-for="(event, index) in pagedEvents"
-          :key="event.id"
-          class="archive-event-slot"
-          :data-event-id="event.id"
-          :style="{
-            '--archive-reflow-delay': `${index * 70}ms`,
-            '--sticker-rotate': archiveStickerPresentation(event.id).rotate,
-            '--tape-rotate': archiveStickerPresentation(event.id).tapeRotate,
-          }"
+      <Transition name="archive-content-state" mode="out-in">
+        <div
+          v-if="isLoading && events.length === 0"
+          key="loading"
+          class="archive-empty card-border"
+          role="status"
+          aria-live="polite"
         >
-          <div
-            :class="[
-              'archive-event-card',
-              'event-sticker-card',
-              archiveStickerPresentation(event.id).tone,
-              {
-                'archive-event-card-confirming': confirmingDeleteId === event.id,
-                'archive-event-card-deleting': isDeleting(event.id),
-                'archive-event-card-removing': isRemoving(event.id),
-              },
-            ]"
-            @animationend="handleStickerAnimationEnd($event, event.id)"
+          正在加载事件档案...
+        </div>
+
+        <div v-else-if="events.length === 0" key="empty" class="archive-empty card-border">
+          <span class="material-symbol" aria-hidden="true">inventory_2</span>
+          <h3>还没有事件记录，请先记录一条宿舍事件。</h3>
+          <RouterLink class="primary-action pop-shadow" :to="{ name: 'record' }">
+            去记录事件
+          </RouterLink>
+        </div>
+
+        <div v-else key="grid" ref="archiveGridRef" class="event-sticker-grid">
+          <article
+            v-for="(event, index) in pagedEvents"
+            :key="event.id"
+            class="archive-event-slot"
+            :data-event-id="event.id"
+            :style="{
+              '--archive-reflow-delay': `${index * 70}ms`,
+              '--sticker-rotate': archiveStickerPresentation(event.id).rotate,
+              '--tape-rotate': archiveStickerPresentation(event.id).tapeRotate,
+            }"
           >
-            <button
-              class="archive-delete-corner pop-shadow"
-              type="button"
-              :disabled="isDeleting(event.id) || isRemoving(event.id)"
-              :aria-label="
-                confirmingDeleteId === event.id
-                  ? `确认删除 ${eventTitle(event)}`
-                  : `删除 ${eventTitle(event)}`
-              "
-              @click="requestDeleteEvent(event)"
+            <div
+              :class="[
+                'archive-event-card',
+                'event-sticker-card',
+                archiveStickerPresentation(event.id).tone,
+                {
+                  'archive-event-card-confirming': confirmingDeleteId === event.id,
+                  'archive-event-card-deleting': isDeleting(event.id),
+                  'archive-event-card-removing': isRemoving(event.id),
+                },
+              ]"
+              @animationend="handleStickerAnimationEnd($event, event.id)"
             >
-              <span class="archive-delete-mark" aria-hidden="true">×</span>
-            </button>
+              <button
+                class="archive-delete-corner pop-shadow"
+                type="button"
+                :disabled="isDeleting(event.id) || isRemoving(event.id)"
+                :aria-label="
+                  confirmingDeleteId === event.id
+                    ? `确认删除 ${eventTitle(event)}`
+                    : `删除 ${eventTitle(event)}`
+                "
+                @click="requestDeleteEvent(event)"
+              >
+                <span class="archive-delete-mark material-symbol" aria-hidden="true">
+                  {{ confirmingDeleteId === event.id ? 'check' : 'close' }}
+                </span>
+              </button>
 
-            <span class="sticker-date">
-              <span class="material-symbol" aria-hidden="true">event</span>
-              {{ event.event_date }}
-            </span>
+              <span class="sticker-date">
+                <span class="material-symbol" aria-hidden="true">event</span>
+                {{ event.event_date }}
+              </span>
 
-            <div class="sticker-title">
-              <h3>{{ eventTitle(event) }}</h3>
-              <strong class="sticker-pressure">{{ event.single_analysis.pressure_score }}</strong>
+              <div class="sticker-title">
+                <h3>{{ eventTitle(event) }}</h3>
+                <strong class="sticker-pressure">{{ event.single_analysis.pressure_score }}</strong>
+              </div>
+
+              <p class="sticker-desc">{{ event.description }}</p>
+
+              <div class="sticker-meta">
+                <span>严重程度<b>{{ event.severity }}/5</b></span>
+                <span>发生频率<b>{{ eventFrequency(event) }}</b></span>
+                <span>当前情绪<b>{{ eventEmotion(event) }}</b></span>
+                <span>单次压力<b>{{ event.single_analysis.pressure_score }}/100</b></span>
+                <span>风险标签<b>{{ event.single_analysis.risk_label }}</b></span>
+                <span>冲突/冷战<b>{{ booleanLabel(event.has_conflict) }}</b></span>
+                <span>沟通状态<b>{{ communicationLabel(event.has_communicated) }}</b></span>
+              </div>
             </div>
-
-            <p class="sticker-desc">{{ event.description }}</p>
-
-            <div class="sticker-meta">
-              <span>严重程度<b>{{ event.severity }}/5</b></span>
-              <span>发生频率<b>{{ eventFrequency(event) }}</b></span>
-              <span>当前情绪<b>{{ eventEmotion(event) }}</b></span>
-              <span>单次压力<b>{{ event.single_analysis.pressure_score }}/100</b></span>
-              <span>风险标签<b>{{ event.single_analysis.risk_label }}</b></span>
-              <span>冲突/冷战<b>{{ booleanLabel(event.has_conflict) }}</b></span>
-              <span>沟通状态<b>{{ communicationLabel(event.has_communicated) }}</b></span>
-            </div>
-          </div>
-        </article>
-      </div>
+          </article>
+        </div>
+      </Transition>
     </section>
   </main>
 </template>

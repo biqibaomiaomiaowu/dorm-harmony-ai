@@ -50,6 +50,8 @@ const showPrivacyModal = ref(false)
 const privacyModalRef = ref<HTMLElement | null>(null)
 const privacyConfirmRef = ref<HTMLButtonElement | null>(null)
 const restoreFocusTarget = ref<HTMLElement | null>(null)
+const shouldRestoreFocusAfterModalLeave = ref(false)
+const shouldOpenPrivacyAfterSafetyLeave = ref(false)
 const homeMeterAnalysis = ref<ArchiveAnalysisResponse>(HOME_METER_FALLBACK)
 const homeMeterError = ref('')
 const isHomeMeterLoading = ref(false)
@@ -220,6 +222,8 @@ function openSafetyModal(event?: MouseEvent) {
       : document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null
+  shouldRestoreFocusAfterModalLeave.value = false
+  shouldOpenPrivacyAfterSafetyLeave.value = false
   showSafetyModal.value = true
   focusInitialModalControl()
 }
@@ -231,9 +235,14 @@ function openPrivacyModal(event?: MouseEvent) {
       : document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null
+  shouldRestoreFocusAfterModalLeave.value = false
+  shouldOpenPrivacyAfterSafetyLeave.value = showSafetyModal.value
   showSafetyModal.value = false
-  showPrivacyModal.value = true
-  focusPrivacyModalControl()
+
+  if (!shouldOpenPrivacyAfterSafetyLeave.value) {
+    showPrivacyModal.value = true
+    focusPrivacyModalControl()
+  }
 }
 
 function restoreFocusAfterModalClose() {
@@ -273,12 +282,34 @@ function closeSafetyModal() {
   }
 
   showSafetyModal.value = false
-  restoreFocusAfterModalClose()
+  shouldOpenPrivacyAfterSafetyLeave.value = false
+  shouldRestoreFocusAfterModalLeave.value = true
 }
 
 function closePrivacyModal() {
   showPrivacyModal.value = false
-  restoreFocusAfterModalClose()
+  shouldRestoreFocusAfterModalLeave.value = true
+}
+
+function handleSafetyModalAfterLeave() {
+  if (shouldOpenPrivacyAfterSafetyLeave.value) {
+    shouldOpenPrivacyAfterSafetyLeave.value = false
+    showPrivacyModal.value = true
+    focusPrivacyModalControl()
+    return
+  }
+
+  if (shouldRestoreFocusAfterModalLeave.value && !showPrivacyModal.value) {
+    shouldRestoreFocusAfterModalLeave.value = false
+    restoreFocusAfterModalClose()
+  }
+}
+
+function handlePrivacyModalAfterLeave() {
+  if (shouldRestoreFocusAfterModalLeave.value) {
+    shouldRestoreFocusAfterModalLeave.value = false
+    restoreFocusAfterModalClose()
+  }
 }
 
 function handleModalKeydown(event: KeyboardEvent) {
@@ -368,100 +399,104 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="page home-page">
-    <div v-if="showSafetyModal" class="safety-modal-overlay" role="presentation">
-      <section
-        ref="safetyModalRef"
-        class="safety-modal pop-card pop-shadow"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="safety-modal-title"
-        tabindex="-1"
-        @keydown="handleModalKeydown"
-      >
-        <button
-          class="modal-close material-symbol"
-          type="button"
-          aria-label="关闭首次使用提示"
-          @click="closeSafetyModal"
+    <Transition name="modal-fade" @after-leave="handleSafetyModalAfterLeave">
+      <div v-if="showSafetyModal" class="safety-modal-overlay" role="presentation">
+        <section
+          ref="safetyModalRef"
+          class="safety-modal pop-card pop-shadow"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="safety-modal-title"
+          tabindex="-1"
+          @keydown="handleModalKeydown"
         >
-          close
-        </button>
-        <p class="eyebrow pill-label">
-          <span class="material-symbol" aria-hidden="true">verified_user</span>
-          首次使用提示
-        </p>
-        <h2 id="safety-modal-title">使用前请了解安全边界</h2>
-        <p class="safety-intro">
-          舍友心晴仅用于宿舍压力趋势提示和沟通练习，不进行心理疾病诊断，也不评价任何舍友的人格或心理状态。
-        </p>
-        <ul class="safety-modal-list">
-          <li>压力值只用于关系压力趋势提示，不作为医学或心理诊断依据。</li>
-          <li>
-            如果出现高压力、严重冲突、持续失眠、强烈焦虑或暴力风险，请及时联系辅导员、心理老师、家人或可信任同学。
-          </li>
-          <li>Demo 阶段不采集真实身份信息，演示数据使用虚拟样例。</li>
-        </ul>
-        <div class="modal-actions">
           <button
-            ref="safetyConfirmRef"
-            class="primary-action pop-shadow"
+            class="modal-close material-symbol"
             type="button"
+            aria-label="关闭首次使用提示"
             @click="closeSafetyModal"
           >
-            我已了解，开始使用
-            <span class="action-icon material-symbol" aria-hidden="true">arrow_forward</span>
+            close
           </button>
-          <button
-            class="secondary-action"
-            type="button"
-            @click="openPrivacyModal"
-          >
-            查看隐私原则
-          </button>
-        </div>
-      </section>
-    </div>
+          <p class="eyebrow pill-label">
+            <span class="material-symbol" aria-hidden="true">verified_user</span>
+            首次使用提示
+          </p>
+          <h2 id="safety-modal-title">使用前请了解安全边界</h2>
+          <p class="safety-intro">
+            舍友心晴仅用于宿舍压力趋势提示和沟通练习，不进行心理疾病诊断，也不评价任何舍友的人格或心理状态。
+          </p>
+          <ul class="safety-modal-list">
+            <li>压力值只用于关系压力趋势提示，不作为医学或心理诊断依据。</li>
+            <li>
+              如果出现高压力、严重冲突、持续失眠、强烈焦虑或暴力风险，请及时联系辅导员、心理老师、家人或可信任同学。
+            </li>
+            <li>Demo 阶段不采集真实身份信息，演示数据使用虚拟样例。</li>
+          </ul>
+          <div class="modal-actions">
+            <button
+              ref="safetyConfirmRef"
+              class="primary-action pop-shadow"
+              type="button"
+              @click="closeSafetyModal"
+            >
+              我已了解，开始使用
+              <span class="action-icon material-symbol" aria-hidden="true">arrow_forward</span>
+            </button>
+            <button
+              class="secondary-action"
+              type="button"
+              @click="openPrivacyModal"
+            >
+              查看隐私原则
+            </button>
+          </div>
+        </section>
+      </div>
+    </Transition>
 
-    <div v-if="showPrivacyModal" class="safety-modal-overlay" role="presentation">
-      <section
-        ref="privacyModalRef"
-        class="safety-modal pop-card pop-shadow"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="privacy-modal-title"
-        tabindex="-1"
-        @keydown="handlePrivacyKeydown"
-      >
-        <button
-          class="modal-close material-symbol"
-          type="button"
-          aria-label="关闭隐私说明"
-          @click="closePrivacyModal"
+    <Transition name="modal-fade" @after-leave="handlePrivacyModalAfterLeave">
+      <div v-if="showPrivacyModal" class="safety-modal-overlay" role="presentation">
+        <section
+          ref="privacyModalRef"
+          class="safety-modal pop-card pop-shadow"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="privacy-modal-title"
+          tabindex="-1"
+          @keydown="handlePrivacyKeydown"
         >
-          close
-        </button>
-        <p class="eyebrow pill-label">
-          <span class="material-symbol" aria-hidden="true">verified_user</span>
-          隐私说明
-        </p>
-        <h2 id="privacy-modal-title">查看隐私原则</h2>
-        <ul class="safety-modal-list">
-          <li>演示数据使用虚拟样例，不采集真实姓名、学号、电话等真实身份信息。</li>
-          <li>仅保留支持关系趋势分析所需的最小字段。</li>
-          <li>本建议用于沟通练习，不作为心理诊断或医学判断依据。</li>
-        </ul>
-        <div class="modal-actions">
           <button
-            ref="privacyConfirmRef"
-            class="primary-action pop-shadow"
+            class="modal-close material-symbol"
             type="button"
+            aria-label="关闭隐私说明"
             @click="closePrivacyModal"
           >
-            我已了解
+            close
           </button>
-        </div>
-      </section>
-    </div>
+          <p class="eyebrow pill-label">
+            <span class="material-symbol" aria-hidden="true">verified_user</span>
+            隐私说明
+          </p>
+          <h2 id="privacy-modal-title">查看隐私原则</h2>
+          <ul class="safety-modal-list">
+            <li>演示数据使用虚拟样例，不采集真实姓名、学号、电话等真实身份信息。</li>
+            <li>仅保留支持关系趋势分析所需的最小字段。</li>
+            <li>本建议用于沟通练习，不作为心理诊断或医学判断依据。</li>
+          </ul>
+          <div class="modal-actions">
+            <button
+              ref="privacyConfirmRef"
+              class="primary-action pop-shadow"
+              type="button"
+              @click="closePrivacyModal"
+            >
+              我已了解
+            </button>
+          </div>
+        </section>
+      </div>
+    </Transition>
 
     <section class="hero-section page-pop-in">
       <div class="hero-copy">
