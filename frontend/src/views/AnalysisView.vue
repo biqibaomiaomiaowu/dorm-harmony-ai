@@ -39,7 +39,7 @@ const EMPTY_ARCHIVE_RESULT: ArchiveAnalysisResult = {
 
 const result = ref<ArchiveAnalysisResult>(EMPTY_ARCHIVE_RESULT)
 const archiveInsight = ref<ArchiveInsightResponse | null>(null)
-const isAnalysisLoading = ref(false)
+const isAnalysisLoading = ref(true)
 const analysisError = ref('')
 const insightStatus = ref<'idle' | 'loading' | 'ready' | 'missing-key' | 'unavailable' | 'error'>('idle')
 const insightError = ref('')
@@ -393,124 +393,129 @@ onBeforeUnmount(() => {
       </p>
     </section>
 
-    <section
-      v-if="analysisError && !isAnalysisLoading"
-      class="analysis-empty-v2 pop-card pop-shadow page-pop-in"
-      role="alert"
-    >
-      <div class="material-symbol" aria-hidden="true">cloud_off</div>
-      <span class="risk-badge">加载失败</span>
-      <h2>总压力分析暂时无法加载</h2>
-      <p>{{ analysisError }}</p>
-      <div class="analysis-actions analysis-empty-actions">
-        <button class="primary-action pop-shadow" type="button" @click="loadArchiveAnalysis">
-          重新加载
-        </button>
-        <RouterLink class="secondary-action pop-shadow" :to="{ name: 'archive' }" role="button">
-          查看事件档案
-        </RouterLink>
-      </div>
-    </section>
-
-    <section
-      v-else-if="!hasArchiveEvents && !isAnalysisLoading"
-      class="analysis-empty-v2 pop-card pop-shadow page-pop-in"
-    >
-      <div class="material-symbol" aria-hidden="true">sentiment_satisfied</div>
-      <span class="risk-badge">关系平稳 (Score 0)</span>
-      <h2>还没有事件记录</h2>
-      <p>请先记录一条宿舍事件以生成分析。</p>
-      <div class="analysis-actions analysis-empty-actions">
-        <RouterLink class="primary-action pop-shadow" :to="{ name: 'record' }" role="button">
-          去记录事件
-        </RouterLink>
-        <RouterLink class="secondary-action pop-shadow" :to="{ name: 'archive' }" role="button">
-          查看事件档案
-        </RouterLink>
-      </div>
-    </section>
-
-    <section
-      v-else-if="hasArchiveEvents && !isAnalysisLoading"
-      class="analysis-v2-bento"
-    >
-      <article
-        class="analysis-gauge-card pop-card pop-shadow page-pop-in"
-        :aria-label="`压力分数 ${result.pressure_score}/100`"
+    <Transition name="analysis-main-state" mode="out-in">
+      <section
+        v-if="analysisError && !isAnalysisLoading"
+        key="error"
+        class="analysis-empty-v2 pop-card pop-shadow page-pop-in"
+        role="alert"
       >
-        <span class="analysis-card-corner" aria-hidden="true"></span>
-        <h2>
-          <span class="material-symbol" aria-hidden="true">speed</span>
-          压力指数
-        </h2>
-        <div class="analysis-gauge" :style="scoreGaugeStyle">
-          <div class="analysis-gauge-core">
-            <strong>{{ animatedScorePercent }}</strong>
-            <span>/ 100</span>
-          </div>
+        <div class="material-symbol" aria-hidden="true">cloud_off</div>
+        <span class="risk-badge">加载失败</span>
+        <h2>总压力分析暂时无法加载</h2>
+        <p>{{ analysisError }}</p>
+        <div class="analysis-actions analysis-empty-actions">
+          <button class="primary-action pop-shadow" type="button" @click="loadArchiveAnalysis">
+            重新加载
+          </button>
+          <RouterLink class="secondary-action pop-shadow" :to="{ name: 'archive' }" role="button">
+            查看事件档案
+          </RouterLink>
         </div>
-        <div class="analysis-gauge-copy">
-          <span class="risk-badge">{{ result.risk_label }}</span>
-          <p>{{ result.suggestion }}</p>
-        </div>
-      </article>
+      </section>
 
-      <div class="analysis-v2-side">
-        <div class="analysis-stat-row">
-          <article class="analysis-stat-card pop-card pop-shadow page-pop-in">
-            <span class="material-symbol" aria-hidden="true">folder_open</span>
-            <div>
-              <p>档案事件数</p>
-              <strong>{{ result.event_count }}</strong>
-            </div>
-          </article>
-          <article class="analysis-stat-card pop-card pop-shadow page-pop-in">
-            <span class="material-symbol" aria-hidden="true">event_upcoming</span>
-            <div>
-              <p>近 30 天事件</p>
-              <strong>{{ result.active_30d_count }}</strong>
-            </div>
-          </article>
+      <section
+        v-else-if="!hasArchiveEvents && !isAnalysisLoading"
+        key="empty"
+        class="analysis-empty-v2 pop-card pop-shadow page-pop-in"
+      >
+        <div class="material-symbol" aria-hidden="true">sentiment_satisfied</div>
+        <span class="risk-badge">关系平稳 (Score 0)</span>
+        <h2>还没有事件记录</h2>
+        <p>请先记录一条宿舍事件以生成分析。</p>
+        <div class="analysis-actions analysis-empty-actions">
+          <RouterLink class="primary-action pop-shadow" :to="{ name: 'record' }" role="button">
+            去记录事件
+          </RouterLink>
+          <RouterLink class="secondary-action pop-shadow" :to="{ name: 'archive' }" role="button">
+            查看事件档案
+          </RouterLink>
         </div>
+      </section>
 
-        <article class="analysis-source-panel pop-card pop-shadow page-pop-in">
+      <section
+        v-else-if="hasArchiveEvents && !isAnalysisLoading"
+        key="ready"
+        class="analysis-v2-bento"
+      >
+        <article
+          class="analysis-gauge-card pop-card pop-shadow page-pop-in"
+          :aria-label="`压力分数 ${result.pressure_score}/100`"
+        >
+          <span class="analysis-card-corner" aria-hidden="true"></span>
           <h2>
-            <span class="material-symbol" aria-hidden="true">pie_chart</span>
-            矛盾溯源分析
+            <span class="material-symbol" aria-hidden="true">speed</span>
+            压力指数
           </h2>
-          <p v-if="sourceBreakdown.length === 0" class="analysis-source-empty">
-            暂无事件类型占比
-          </p>
-          <div v-else class="analysis-source-bars">
-            <div v-for="source in sourceBreakdown" :key="source.label" class="analysis-source-item">
+          <div class="analysis-gauge" :style="scoreGaugeStyle">
+            <div class="analysis-gauge-core">
+              <strong>{{ animatedScorePercent }}</strong>
+              <span>/ 100</span>
+            </div>
+          </div>
+          <div class="analysis-gauge-copy">
+            <span class="risk-badge">{{ result.risk_label }}</span>
+            <p>{{ result.suggestion }}</p>
+          </div>
+        </article>
+
+        <div class="analysis-v2-side">
+          <div class="analysis-stat-row">
+            <article class="analysis-stat-card pop-card pop-shadow page-pop-in">
+              <span class="material-symbol" aria-hidden="true">folder_open</span>
               <div>
-                <span>{{ source.label }}</span>
-                <strong>{{ source.percent }}%</strong>
+                <p>档案事件数</p>
+                <strong>{{ result.event_count }}</strong>
               </div>
-              <div class="analysis-source-track card-border">
-                <i
-                  :class="['analysis-source-fill', `analysis-source-fill-${source.tone}`]"
-                  :style="{ width: `${source.animatedPercent}%` }"
-                ></i>
+            </article>
+            <article class="analysis-stat-card pop-card pop-shadow page-pop-in">
+              <span class="material-symbol" aria-hidden="true">event_upcoming</span>
+              <div>
+                <p>近 30 天事件</p>
+                <strong>{{ result.active_30d_count }}</strong>
+              </div>
+            </article>
+          </div>
+
+          <article class="analysis-source-panel pop-card pop-shadow page-pop-in">
+            <h2>
+              <span class="material-symbol" aria-hidden="true">pie_chart</span>
+              矛盾溯源分析
+            </h2>
+            <p v-if="sourceBreakdown.length === 0" class="analysis-source-empty">
+              暂无事件类型占比
+            </p>
+            <div v-else class="analysis-source-bars">
+              <div v-for="source in sourceBreakdown" :key="source.label" class="analysis-source-item">
+                <div>
+                  <span>{{ source.label }}</span>
+                  <strong>{{ source.percent }}%</strong>
+                </div>
+                <div class="analysis-source-track card-border">
+                  <i
+                    :class="['analysis-source-fill', `analysis-source-fill-${source.tone}`]"
+                    :style="{ width: `${source.animatedPercent}%` }"
+                  ></i>
+                </div>
               </div>
             </div>
-          </div>
-        </article>
+          </article>
 
-        <article class="analysis-signals-panel pop-card pop-shadow page-pop-in">
-          <h2>
-            <span class="material-symbol" aria-hidden="true">psychology</span>
-            情绪与趋势
-          </h2>
-          <div class="analysis-keyword-list">
-            <span v-for="keyword in result.emotion_keywords" :key="keyword">
-              {{ keyword }}
-            </span>
-          </div>
-          <p>{{ result.trend_message }}</p>
-        </article>
-      </div>
-    </section>
+          <article class="analysis-signals-panel pop-card pop-shadow page-pop-in">
+            <h2>
+              <span class="material-symbol" aria-hidden="true">psychology</span>
+              情绪与趋势
+            </h2>
+            <div class="analysis-keyword-list">
+              <span v-for="keyword in result.emotion_keywords" :key="keyword">
+                {{ keyword }}
+              </span>
+            </div>
+            <p>{{ result.trend_message }}</p>
+          </article>
+        </div>
+      </section>
+    </Transition>
 
     <div v-if="!isAnalysisLoading && !analysisError" class="analysis-v2-divider" aria-hidden="true">
       <svg fill="none" height="20" viewBox="0 0 200 20" width="200" xmlns="http://www.w3.org/2000/svg">

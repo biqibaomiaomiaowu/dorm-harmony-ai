@@ -213,8 +213,17 @@ async function submitRecord() {
 
       <div class="form-submit">
         <button class="primary-action pop-shadow" type="submit" :disabled="isSubmitting">
-          {{ isSubmitting ? '提交中...' : '保存并查看档案' }}
-          <span class="action-icon material-symbol" aria-hidden="true">arrow_forward</span>
+          <span
+            v-if="isSubmitting"
+            class="action-spinner material-symbol"
+            aria-hidden="true"
+          >
+            progress_activity
+          </span>
+          <span>{{ isSubmitting ? '提交中...' : '保存并查看档案' }}</span>
+          <span v-if="!isSubmitting" class="action-icon material-symbol" aria-hidden="true">
+            arrow_forward
+          </span>
         </button>
         <p v-if="submitError" class="error-text">{{ submitError }}</p>
       </div>
