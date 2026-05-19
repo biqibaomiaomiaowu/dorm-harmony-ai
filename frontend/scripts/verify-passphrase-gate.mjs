@@ -58,10 +58,13 @@ requireIncludes('src/App.vue', [
   'function savePassphraseState',
   'localStorage.getItem(passphraseStorageKey)',
   'localStorage.setItem(passphraseStorageKey,',
-  'async function hashPassphrase',
+  'function sha256Hex',
+  'function hashPassphrase',
   'function submitPassphrase',
   'function clearPassphraseError',
-  "crypto.subtle.digest('SHA-256'",
+  'new TextEncoder().encode(value)',
+  'rightRotate',
+  "word.toString(16).padStart(8, '0')",
   'candidateHash !== passphraseHash',
   'passphraseInput.value.trim()',
   '请输入密语',
@@ -77,7 +80,13 @@ requireIncludes('src/App.vue', [
   'passphrase-gate',
 ])
 
-requireExcludes('src/App.vue', ['请输入谜语', '无敌小猪爱吃草', 'const secretPhrase'])
+requireExcludes('src/App.vue', [
+  '请输入谜语',
+  '无敌小猪爱吃草',
+  'const secretPhrase',
+  'crypto.subtle',
+  '当前浏览器不支持安全验证，请使用 HTTPS 或最新版浏览器',
+])
 
 requireMatches('src/App.vue', [
   {
@@ -93,7 +102,7 @@ requireMatches('src/App.vue', [
   {
     label: 'passphrase submit compares trimmed input hash to the configured hash',
     pattern:
-      /const candidateHash = await hashPassphrase\(passphraseInput\.value\.trim\(\)\)[\s\S]*?if \(candidateHash !== passphraseHash\) \{[\s\S]*?passphraseError\.value = '密语不对/,
+      /const candidateHash = hashPassphrase\(passphraseInput\.value\.trim\(\)\)[\s\S]*?if \(candidateHash !== passphraseHash\) \{[\s\S]*?passphraseError\.value = '密语不对/,
   },
   {
     label: 'successful passphrase stores verified state before showing the app when possible',
