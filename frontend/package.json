@@ -11,6 +11,7 @@
     "verify:phase2": "node scripts/verify-phase2.mjs",
     "verify:phase3": "node scripts/verify-phase3.mjs",
     "verify:v2": "node scripts/verify-v2.mjs",
+    "verify:passphrase": "node scripts/verify-passphrase-gate.mjs",
     "build-only": "vite build",
     "type-check": "vue-tsc --build",
     "lint": "run-s lint:*",
