@@ -13,3 +13,16 @@ __pycache__/
 .venv/
 backend/.env
 backend/.runtime/
+
+# Local document update scratch files
+.feishu-planning-update.xml
+.feishu-*.xml
+.capture-feishu-screenshots.mjs
+.capture-*.mjs
+dorm-harmony-screenshots/
+screenshots/
+*.tmp.png
+
+# Local promo poster generation artifacts
+poster-output/
+poster-work/
