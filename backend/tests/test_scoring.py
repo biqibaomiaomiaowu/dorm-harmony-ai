@@ -62,6 +62,75 @@ def test_analyze_request_trims_description():
     assert request.description == "公共区域有点乱"
 
 
+def test_analyze_request_accepts_multiple_emotions_and_primary_emotion():
+    request = AnalyzeRequest(
+        event_type=EventType.NOISE,
+        severity=4,
+        frequency=EventFrequency.WEEKLY_MULTIPLE,
+        emotion=Emotion.HELPLESS,
+        emotions=[Emotion.HELPLESS, Emotion.ANGRY, Emotion.WRONGED],
+        primary_emotion=Emotion.HELPLESS,
+        has_communicated=False,
+        has_conflict=True,
+        description="舍友晚上打游戏声音很大，我很无奈也有点生气。",
+    )
+
+    result = analyze_pressure(request)
+
+    assert request.emotion == Emotion.HELPLESS
+    assert request.primary_emotion == Emotion.HELPLESS
+    assert request.emotions == [Emotion.HELPLESS, Emotion.ANGRY, Emotion.WRONGED]
+    assert result.emotion_keywords == ["无奈", "愤怒", "委屈"]
+    assert result.pressure_score > 70
+
+
+def test_analyze_request_deduplicates_emotions_and_keeps_primary_in_selection():
+    request = AnalyzeRequest(
+        event_type=EventType.NOISE,
+        severity=3,
+        frequency=EventFrequency.OCCASIONAL,
+        emotions=[Emotion.ANGRY, Emotion.HELPLESS, Emotion.ANGRY],
+        primary_emotion=Emotion.HELPLESS,
+        has_communicated=True,
+        has_conflict=False,
+        description="我有点生气，也很无奈。",
+    )
+
+    assert request.emotion == Emotion.HELPLESS
+    assert request.primary_emotion == Emotion.HELPLESS
+    assert request.emotions == [Emotion.ANGRY, Emotion.HELPLESS]
+
+
+def test_analyze_request_rejects_primary_emotion_outside_emotions():
+    with pytest.raises(ValidationError):
+        AnalyzeRequest(
+            event_type=EventType.NOISE,
+            severity=3,
+            frequency=EventFrequency.OCCASIONAL,
+            emotions=[Emotion.ANGRY, Emotion.WRONGED],
+            primary_emotion=Emotion.HELPLESS,
+            has_communicated=True,
+            has_conflict=False,
+            description="我有点生气，也很委屈。",
+        )
+
+
+def test_analyze_pressure_keeps_frontend_emotion_labels_for_helpless_and_depressed():
+    helpless = AnalyzeRequest(
+        event_type=EventType.HYGIENE,
+        severity=1,
+        frequency=EventFrequency.OCCASIONAL,
+        emotion=Emotion.HELPLESS,
+        has_communicated=True,
+        has_conflict=False,
+        description="这周公共区域有点乱，但我们已经沟通过一次。",
+    )
+    depressed = helpless.model_copy(update={"emotion": Emotion.DEPRESSED})
+
+    assert analyze_pressure(helpless).emotion_keywords == ["无奈"]
+    assert analyze_pressure(depressed).emotion_keywords == ["压抑"]
+
+
 def test_analyze_request_rejects_blank_description():
     with pytest.raises(ValidationError):
         AnalyzeRequest(

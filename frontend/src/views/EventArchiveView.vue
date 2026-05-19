@@ -9,6 +9,7 @@ import {
   eventTypeLabels,
   fetchEventArchive,
   frequencyLabels,
+  type ArchiveEmotion,
   type EventRecord,
 } from '@/data/eventArchive'
 
@@ -59,8 +60,21 @@ function eventFrequency(event: EventRecord) {
   return frequencyLabels[event.frequency] ?? event.frequency
 }
 
-function eventEmotion(event: EventRecord) {
-  return emotionLabels[event.emotion] ?? event.emotion
+function eventPrimaryEmotion(event: EventRecord) {
+  return event.primary_emotion ?? event.emotion
+}
+
+function eventEmotionList(event: EventRecord): ArchiveEmotion[] {
+  const values = event.emotions && event.emotions.length > 0 ? event.emotions : [eventPrimaryEmotion(event)]
+  return Array.from(new Set(values))
+}
+
+function eventEmotionLabel(emotion: string) {
+  return emotionLabels[emotion] ?? emotion
+}
+
+function isEventPrimaryEmotion(event: EventRecord, emotion: string) {
+  return eventPrimaryEmotion(event) === emotion
 }
 
 function booleanLabel(value: boolean) {
@@ -421,7 +435,18 @@ onBeforeUnmount(() => {
               <div class="sticker-meta">
                 <span>严重程度<b>{{ event.severity }}/5</b></span>
                 <span>发生频率<b>{{ eventFrequency(event) }}</b></span>
-                <span>当前情绪<b>{{ eventEmotion(event) }}</b></span>
+                <span class="sticker-emotion-meta">
+                  当前情绪
+                  <b>
+                    <i
+                      v-for="emotion in eventEmotionList(event)"
+                      :key="emotion"
+                      :class="{ primary: isEventPrimaryEmotion(event, emotion) }"
+                    >
+                      {{ eventEmotionLabel(emotion) }}
+                    </i>
+                  </b>
+                </span>
                 <span>单次压力<b>{{ event.single_analysis.pressure_score }}/100</b></span>
                 <span>风险标签<b>{{ event.single_analysis.risk_label }}</b></span>
                 <span>冲突/冷战<b>{{ booleanLabel(event.has_conflict) }}</b></span>

@@ -3,6 +3,8 @@ export interface AnalyzeRequest {
   severity: number
   frequency: string
   emotion: string
+  emotions?: string[]
+  primary_emotion?: string
   has_communicated: boolean
   has_conflict: boolean
   description: string
@@ -44,8 +46,37 @@ export const LAST_EVENT_STORAGE_KEY = 'dorm-harmony:last-event'
 export const ANALYSIS_RESULT_STORAGE_KEY = 'dorm-harmony:analysis-result'
 export const SIMULATION_RESULT_STORAGE_KEY = 'dorm-harmony:simulation-result'
 export const REVIEW_RESULT_STORAGE_KEY = 'dorm-harmony:review-result'
+export const ROOMMATE_PROFILES_STORAGE_KEY = 'dorm-harmony:roommate-profiles:v1'
 
-export type ReviewDialogueSpeaker = 'user' | 'roommate_a' | 'roommate_b' | 'roommate_c' | 'system'
+export type RoommatePresetKey = 'direct' | 'avoidant' | 'harmony'
+export type RoommateTagMode = 'preset' | 'custom'
+export type RoommateAvatarKey =
+  | 'nailong'
+  | 'capybara_lulu'
+  | 'baobaolong'
+  | 'patrick'
+  | 'spongebob'
+
+export interface RoommateTraits {
+  directness: number
+  emotional_reactivity: number
+  avoidance: number
+  empathy: number
+  solution_willingness: number
+  boundary_sensitivity: number
+}
+
+export interface RoommateProfile {
+  id: string
+  name: string
+  personality_tag: string
+  tag_mode: RoommateTagMode
+  preset_key?: RoommatePresetKey
+  avatar: RoommateAvatarKey
+  traits: RoommateTraits
+}
+
+export type ReviewDialogueSpeaker = 'user' | 'system' | `roommate_${string}`
 
 export interface ReviewDialogueLine {
   speaker: ReviewDialogueSpeaker
@@ -53,21 +84,30 @@ export interface ReviewDialogueLine {
 }
 
 export interface SimulationRequest {
+  conversation_id?: string
+  turn_id?: string
   scenario: string
-  user_message: string
+  user_message?: string
   risk_level?: AnalyzeRiskLevel
   context?: string
-  dialogue?: ReviewDialogueLine[]
+  roommates?: RoommateProfile[]
+  use_event_archive?: boolean
+  is_continuation?: boolean
+  max_replies?: number
 }
 
 export interface SimulationReply {
+  roommate_id: string
   roommate: string
   personality: string
   message: string
 }
 
 export interface SimulationResponse {
+  conversation_id: string
   replies: SimulationReply[]
+  archive_context_used: boolean
+  archive_context_summary?: string
   safety_note: string
   is_demo: boolean
   demo_notice: string
@@ -77,13 +117,30 @@ type SimulationResponsePayload = Omit<SimulationResponse, 'is_demo' | 'demo_noti
   Partial<Pick<SimulationResponse, 'is_demo' | 'demo_notice'>>
 
 export type SimulationStreamEvent =
-  | { type: 'start' }
+  | { type: 'start'; conversation_id?: string }
   | { type: 'reply'; reply: SimulationReply }
   | { type: 'final'; response: SimulationResponsePayload }
 
 export interface SimulationStreamHandlers {
-  onStart?: () => void
+  onStart?: (conversationId?: string) => void
   onReply?: (reply: SimulationReply) => void
+}
+
+export class SimulationStreamRequestError extends Error {
+  recoverable: boolean
+
+  constructor(message: string, recoverable: boolean) {
+    super(message)
+    this.name = 'SimulationStreamRequestError'
+    this.recoverable = recoverable
+  }
+}
+
+export class SimulationRequestError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SimulationRequestError'
+  }
 }
 
 export interface StoredSimulationResult {
@@ -99,11 +156,11 @@ export interface ReviewOriginalEvent {
 }
 
 export interface ReviewRewriteSuggestion {
-  feeling_expression: string
-  specific_request: string
-  communication_space: string
-  instead: string
-  instead_after: string
+  message_index: number
+  original_message: string
+  issue: string
+  suggested_message: string
+  reason: string
 }
 
 export interface ReviewPerformanceScores {
@@ -117,7 +174,8 @@ export interface ReviewResponse {
   strengths: string[]
   risks: string[]
   performance_scores: ReviewPerformanceScores
-  rewritten_message: string | ReviewRewriteSuggestion
+  rewrite_suggestions: ReviewRewriteSuggestion[]
+  rewritten_message: string
   next_steps: string[]
   safety_note: string
   is_demo: boolean
@@ -129,7 +187,8 @@ type ReviewResponsePayload = Omit<ReviewResponse, 'performance_scores' | 'is_dem
 
 export interface ReviewRequest {
   scenario: string
-  dialogue: ReviewDialogueLine[]
+  conversation_id?: string
+  dialogue?: ReviewDialogueLine[]
   original_event?: ReviewOriginalEvent
 }
 
@@ -147,13 +206,22 @@ type LegacyEventType =
   | 'emotional_conflict'
 
 type LegacyFrequency = 'occasionally' | 'weekly' | 'daily'
-type LegacyEmotion = 'irritated' | 'anxious' | 'wronged' | 'angry' | 'helpless' | 'repressed'
+type LegacyEmotion =
+  | 'irritated'
+  | 'anxious'
+  | 'wronged'
+  | 'angry'
+  | 'helpless'
+  | 'repressed'
+  | 'depressed'
 
 interface AnalyzeRequestPayload {
   event_type: 'noise' | 'schedule' | 'hygiene' | 'cost' | 'privacy' | 'emotion'
   severity: number
   frequency: 'occasional' | 'weekly_multiple' | 'daily'
   emotion: 'irritable' | 'anxious' | 'wronged' | 'angry' | 'helpless' | 'depressed'
+  emotions?: Array<'irritable' | 'anxious' | 'wronged' | 'angry' | 'helpless' | 'depressed'>
+  primary_emotion?: 'irritable' | 'anxious' | 'wronged' | 'angry' | 'helpless' | 'depressed'
   has_communicated: boolean
   has_conflict: boolean
   description: string
@@ -174,13 +242,230 @@ const FREQUENCY_MAP: Record<LegacyFrequency, AnalyzeRequestPayload['frequency']>
   daily: 'daily',
 }
 
-const EMOTION_MAP: Record<LegacyEmotion, AnalyzeRequestPayload['emotion']> = {
+const EMOTION_MAP: Record<string, AnalyzeRequestPayload['emotion']> = {
   irritated: 'irritable',
+  irritable: 'irritable',
   anxious: 'anxious',
   wronged: 'wronged',
   angry: 'angry',
   helpless: 'helpless',
   repressed: 'depressed',
+  depressed: 'depressed',
+  无奈: 'helpless',
+  压抑: 'depressed',
+}
+
+export const roommatePresetLabels: Record<RoommatePresetKey, string> = {
+  direct: '直接型',
+  avoidant: '回避型',
+  harmony: '调和型',
+}
+
+export const roommatePresetTraits: Record<RoommatePresetKey, RoommateTraits> = {
+  direct: {
+    directness: 5,
+    emotional_reactivity: 3,
+    avoidance: 1,
+    empathy: 2,
+    solution_willingness: 3,
+    boundary_sensitivity: 4,
+  },
+  avoidant: {
+    directness: 1,
+    emotional_reactivity: 2,
+    avoidance: 5,
+    empathy: 2,
+    solution_willingness: 1,
+    boundary_sensitivity: 3,
+  },
+  harmony: {
+    directness: 3,
+    emotional_reactivity: 1,
+    avoidance: 1,
+    empathy: 5,
+    solution_willingness: 5,
+    boundary_sensitivity: 3,
+  },
+}
+
+export const roommateTraitLabels: Record<keyof RoommateTraits, string> = {
+  directness: '表达直接度',
+  emotional_reactivity: '情绪反应度',
+  avoidance: '回避倾向',
+  empathy: '共情倾向',
+  solution_willingness: '解决意愿',
+  boundary_sensitivity: '边界敏感度',
+}
+
+export const roommatePresetOptions: Array<{ key: RoommatePresetKey; label: string }> = [
+  { key: 'direct', label: roommatePresetLabels.direct },
+  { key: 'avoidant', label: roommatePresetLabels.avoidant },
+  { key: 'harmony', label: roommatePresetLabels.harmony },
+]
+
+export const roommateAvatarOptions: Array<{
+  key: RoommateAvatarKey
+  label: string
+  shortLabel: string
+}> = [
+  { key: 'nailong', label: '奶龙', shortLabel: '奶' },
+  { key: 'capybara_lulu', label: '水豚噜噜', shortLabel: '噜' },
+  { key: 'baobaolong', label: '暴暴龙', shortLabel: '暴' },
+  { key: 'patrick', label: '派大星', shortLabel: '派' },
+  { key: 'spongebob', label: '海绵宝宝', shortLabel: '绵' },
+]
+
+function cloneTraits(traits: RoommateTraits): RoommateTraits {
+  return { ...traits }
+}
+
+export const defaultRoommates: RoommateProfile[] = [
+  {
+    id: 'roommate_a',
+    name: '舍友 A',
+    personality_tag: roommatePresetLabels.direct,
+    tag_mode: 'preset',
+    preset_key: 'direct',
+    avatar: 'nailong',
+    traits: cloneTraits(roommatePresetTraits.direct),
+  },
+  {
+    id: 'roommate_b',
+    name: '舍友 B',
+    personality_tag: roommatePresetLabels.avoidant,
+    tag_mode: 'preset',
+    preset_key: 'avoidant',
+    avatar: 'capybara_lulu',
+    traits: cloneTraits(roommatePresetTraits.avoidant),
+  },
+  {
+    id: 'roommate_c',
+    name: '舍友 C',
+    personality_tag: roommatePresetLabels.harmony,
+    tag_mode: 'preset',
+    preset_key: 'harmony',
+    avatar: 'baobaolong',
+    traits: cloneTraits(roommatePresetTraits.harmony),
+  },
+]
+
+export function createDefaultRoommates(): RoommateProfile[] {
+  return defaultRoommates.map((roommate) => ({
+    ...roommate,
+    traits: cloneTraits(roommate.traits),
+  }))
+}
+
+function clampTrait(value: unknown): number {
+  const numberValue = Number(value)
+  if (!Number.isFinite(numberValue)) {
+    return 2
+  }
+
+  return Math.max(0, Math.min(5, Math.round(numberValue)))
+}
+
+function isPresetKey(value: unknown): value is RoommatePresetKey {
+  return value === 'direct' || value === 'avoidant' || value === 'harmony'
+}
+
+function isRoommateAvatarKey(value: unknown): value is RoommateAvatarKey {
+  return roommateAvatarOptions.some((option) => option.key === value)
+}
+
+function isRoommateTraits(value: unknown): value is RoommateTraits {
+  return (
+    isRecord(value) &&
+    typeof value.directness === 'number' &&
+    typeof value.emotional_reactivity === 'number' &&
+    typeof value.avoidance === 'number' &&
+    typeof value.empathy === 'number' &&
+    typeof value.solution_willingness === 'number' &&
+    typeof value.boundary_sensitivity === 'number'
+  )
+}
+
+export function normalizeRoommates(value: unknown): RoommateProfile[] {
+  if (!Array.isArray(value)) {
+    return createDefaultRoommates()
+  }
+
+  const seenIds = new Set<string>()
+  const seenAvatars = new Set<RoommateAvatarKey>()
+  const normalized = value
+    .map((item, index): RoommateProfile | null => {
+      if (!isRecord(item)) {
+        return null
+      }
+
+      const rawId = typeof item.id === 'string' ? item.id.trim() : ''
+      const fallbackId = `roommate_custom_${index + 1}`
+      const normalizedRawId = rawId.replace(/\s+/g, '_')
+      const idSource = normalizedRawId || fallbackId
+      const id = idSource.startsWith('roommate_') ? idSource : `roommate_${idSource}`
+      if (seenIds.has(id)) {
+        return null
+      }
+      seenIds.add(id)
+
+      const rawName = typeof item.name === 'string' ? item.name.trim() : ''
+      const name = rawName || `舍友 ${index + 1}`
+      const tagMode = item.tag_mode === 'custom' ? 'custom' : 'preset'
+      const presetKey = isPresetKey(item.preset_key) ? item.preset_key : 'direct'
+      const rawAvatar = isRoommateAvatarKey(item.avatar) ? item.avatar : undefined
+      const avatar =
+        rawAvatar && !seenAvatars.has(rawAvatar)
+          ? rawAvatar
+          : roommateAvatarOptions.find((option) => !seenAvatars.has(option.key))?.key
+      if (!avatar) {
+        return null
+      }
+      seenAvatars.add(avatar)
+
+      if (tagMode === 'preset') {
+        return {
+          id,
+          name,
+          personality_tag: roommatePresetLabels[presetKey],
+          tag_mode: 'preset',
+          preset_key: presetKey,
+          avatar,
+          traits: cloneTraits(roommatePresetTraits[presetKey]),
+        }
+      }
+
+      const rawTag =
+        typeof item.personality_tag === 'string' && item.personality_tag.trim()
+          ? item.personality_tag.trim()
+          : '自定义'
+      const sourceTraits = isRoommateTraits(item.traits)
+        ? item.traits
+        : roommatePresetTraits.direct
+
+      return {
+        id,
+        name,
+        personality_tag: rawTag,
+        tag_mode: 'custom',
+        avatar,
+        traits: {
+          directness: clampTrait(sourceTraits.directness),
+          emotional_reactivity: clampTrait(sourceTraits.emotional_reactivity),
+          avoidance: clampTrait(sourceTraits.avoidance),
+          empathy: clampTrait(sourceTraits.empathy),
+          solution_willingness: clampTrait(sourceTraits.solution_willingness),
+          boundary_sensitivity: clampTrait(sourceTraits.boundary_sensitivity),
+        },
+      }
+    })
+    .filter((roommate): roommate is RoommateProfile => roommate !== null)
+    .slice(0, 5)
+
+  if (normalized.length < 1) {
+    return createDefaultRoommates()
+  }
+
+  return normalized
 }
 
 export function mapEventTypeToAnalyzeApi(
@@ -206,7 +491,17 @@ export function mapEventTypeToAnalyzeApi(
   return undefined
 }
 
-export function mapRoommateToReviewSpeaker(roommate: string): ReviewDialogueSpeaker {
+export function mapRoommateToReviewSpeaker(
+  roommate: string,
+  roommateId?: string,
+): ReviewDialogueSpeaker {
+  const normalizedId = roommateId?.trim()
+  if (normalizedId) {
+    return normalizedId.startsWith('roommate_')
+      ? (normalizedId as ReviewDialogueSpeaker)
+      : (`roommate_${normalizedId}` as ReviewDialogueSpeaker)
+  }
+
   const normalized = roommate.trim()
   const compact = normalized.replace(/\s+/g, '')
 
@@ -246,7 +541,7 @@ export const emotionOptions = [
   { value: 'wronged', label: '委屈', icon: 'sentiment_sad' },
   { value: 'angry', label: '愤怒', icon: 'sentiment_extremely_dissatisfied' },
   { value: 'helpless', label: '无奈', icon: 'sentiment_neutral' },
-  { value: 'repressed', label: '压抑', icon: 'sentiment_stressed' },
+  { value: 'depressed', label: '压抑', icon: 'sentiment_stressed' },
 ]
 
 export const simulationScenarios = [
@@ -304,6 +599,17 @@ export function optionLabel(options: Array<{ value: string; label: string }>, va
   return options.find((option) => option.value === value)?.label ?? value
 }
 
+function normalizeEmotionKeywordLabel(keyword: string) {
+  if (keyword === '无助') {
+    return '无奈'
+  }
+  if (keyword === '低落') {
+    return '压抑'
+  }
+
+  return keyword
+}
+
 export function normalizeAnalyzeResponse(
   payload: AnalyzeApiResponse,
   demoNotice = '',
@@ -315,7 +621,7 @@ export function normalizeAnalyzeResponse(
     risk_label: payload.risk_label,
     main_reasons: payload.main_sources,
     main_sources: payload.main_sources,
-    emotion_keywords: payload.emotion_keywords,
+    emotion_keywords: payload.emotion_keywords.map(normalizeEmotionKeywordLabel),
     suggestion: payload.suggestion,
     trend_message: payload.trend_message,
     recommend_simulation: payload.recommend_simulation,
@@ -348,36 +654,41 @@ function buildDemoAnalyzeResult(reason: string): AnalyzeResult {
 
 export function buildDemoSimulationResponse(reason: string): SimulationResponse {
   return {
+    conversation_id: `demo-${Date.now()}`,
     replies: [
       {
+        roommate_id: 'roommate_a',
         roommate: '舍友 A',
         personality: '直接型',
         message: '我也没多大声吧，你是不是太敏感了？',
       },
       {
+        roommate_id: 'roommate_b',
         roommate: '舍友 B',
         personality: '回避型',
         message: '这个事情之后再说吧。',
       },
       {
+        roommate_id: 'roommate_c',
         roommate: '舍友 C',
         personality: '调和型',
         message: '要不我们一起定一个晚上安静时间？',
       },
     ],
-    safety_note: '当前为演示兜底回复，未接入后端服务。',
+    archive_context_used: false,
+    safety_note: `当前为演示兜底回复：${reason}`,
     is_demo: true,
     demo_notice: reason,
   }
 }
 
 const reviewSuggestionBypass: ReviewRewriteSuggestion = {
-  feeling_expression: '先说明自己的睡眠状态和感受，再进入请求。',
-  specific_request: '我最近睡眠受影响比较明显，能否让晚上 11 点后把音量调低一点？',
-  communication_space: '我们先定个周内临时规则看看效果，我也会尽量配合调节。',
-  instead: '你晚上打游戏太吵了，快点闭麦，要不是这样我受不了。',
-  instead_after:
+  message_index: 0,
+  original_message: '你晚上能不能小声点？',
+  issue: '请求比较笼统，容易被理解成单纯指责。',
+  suggested_message:
     '我最近睡眠状态不太好，晚上声音比较容易影响我。我们能不能约定 11 点后戴耳机或调低音量？',
+  reason: '先说明影响，再提出具体可执行的调整。',
 }
 
 const demoReviewStrengths = [
@@ -411,7 +722,8 @@ export function buildDemoReviewResponse(reason: string, request: ReviewRequest):
     strengths: [...demoReviewStrengths],
     risks: [...demoReviewRisks],
     performance_scores: { ...demoReviewPerformanceScores },
-    rewritten_message: { ...reviewSuggestionBypass },
+    rewrite_suggestions: [{ ...reviewSuggestionBypass }],
+    rewritten_message: reviewSuggestionBypass.suggested_message,
     next_steps: [...demoReviewSteps],
     safety_note: '本复盘仅用于沟通训练建议，不进行医学、心理诊断或人格评价。',
     is_demo: true,
@@ -422,13 +734,25 @@ export function buildDemoReviewResponse(reason: string, request: ReviewRequest):
 function mapAnalyzeRequest(form: AnalyzeRequest): AnalyzeRequestPayload {
   const mappedEventType = EVENT_TYPE_MAP[form.event_type as LegacyEventType] ?? 'emotion'
   const mappedFrequency = FREQUENCY_MAP[form.frequency as LegacyFrequency] ?? 'occasional'
-  const mappedEmotion = EMOTION_MAP[form.emotion as LegacyEmotion] ?? 'helpless'
+  const mappedPrimaryEmotion =
+    EMOTION_MAP[(form.primary_emotion || form.emotion) as LegacyEmotion] ?? 'helpless'
+  const mappedEmotions = Array.from(
+    new Set(
+      (form.emotions && form.emotions.length > 0 ? form.emotions : [form.emotion])
+        .map((emotion) => EMOTION_MAP[emotion as LegacyEmotion])
+        .filter((emotion): emotion is AnalyzeRequestPayload['emotion'] => Boolean(emotion)),
+    ),
+  )
 
   return {
     event_type: mappedEventType,
     severity: Number(form.severity) || 1,
     frequency: mappedFrequency,
-    emotion: mappedEmotion,
+    emotion: mappedPrimaryEmotion,
+    emotions: mappedEmotions.includes(mappedPrimaryEmotion)
+      ? mappedEmotions
+      : [mappedPrimaryEmotion, ...mappedEmotions],
+    primary_emotion: mappedPrimaryEmotion,
     has_communicated: form.has_communicated === true,
     has_conflict: form.has_conflict === true,
     description: form.description ?? '',
@@ -446,6 +770,8 @@ function isStringArray(value: unknown): value is string[] {
 function isSimulationReply(value: unknown): value is SimulationReply {
   return (
     isRecord(value) &&
+    typeof value.roommate_id === 'string' &&
+    value.roommate_id.length > 0 &&
     typeof value.roommate === 'string' &&
     value.roommate.length > 0 &&
     typeof value.personality === 'string' &&
@@ -461,17 +787,27 @@ function isSimulationResponsePayload(value: unknown): value is SimulationRespons
   }
 
   const replies = (value as { replies?: unknown }).replies
+  const conversationId = (value as { conversation_id?: unknown }).conversation_id
   const safetyNote = (value as { safety_note?: unknown }).safety_note
+  const archiveContextUsed = (value as { archive_context_used?: unknown }).archive_context_used
+  const archiveContextSummary = (value as { archive_context_summary?: unknown }).archive_context_summary
   const isDemo = (value as { is_demo?: unknown }).is_demo
   const demoNotice = (value as { demo_notice?: unknown }).demo_notice
   const hasCompatibleSourceFields =
     (typeof isDemo === 'undefined' || typeof isDemo === 'boolean') &&
     (typeof demoNotice === 'undefined' || typeof demoNotice === 'string')
+  const hasCompatibleArchiveFields =
+    (typeof archiveContextUsed === 'undefined' || typeof archiveContextUsed === 'boolean') &&
+    (typeof archiveContextSummary === 'undefined' ||
+      typeof archiveContextSummary === 'string' ||
+      archiveContextSummary === null)
 
   return (
     Array.isArray(replies) &&
     replies.every(isSimulationReply) &&
+    (typeof conversationId === 'undefined' || typeof conversationId === 'string') &&
     typeof safetyNote === 'string' &&
+    hasCompatibleArchiveFields &&
     hasCompatibleSourceFields
   )
 }
@@ -482,7 +818,10 @@ function isSimulationStreamEvent(value: unknown): value is SimulationStreamEvent
   }
 
   if (value.type === 'start') {
-    return true
+    return (
+      typeof (value as { conversation_id?: unknown }).conversation_id === 'undefined' ||
+      typeof (value as { conversation_id?: unknown }).conversation_id === 'string'
+    )
   }
 
   if (value.type === 'reply') {
@@ -502,11 +841,12 @@ function isReviewRewriteSuggestion(value: unknown): value is ReviewRewriteSugges
   }
 
   return (
-    typeof value.feeling_expression === 'string' &&
-    typeof value.specific_request === 'string' &&
-    typeof value.communication_space === 'string' &&
-    typeof value.instead === 'string' &&
-    typeof value.instead_after === 'string'
+    typeof value.message_index === 'number' &&
+    Number.isFinite(value.message_index) &&
+    typeof value.original_message === 'string' &&
+    typeof value.issue === 'string' &&
+    typeof value.suggested_message === 'string' &&
+    typeof value.reason === 'string'
   )
 }
 
@@ -534,6 +874,7 @@ function isReviewResponsePayload(value: unknown): value is ReviewResponsePayload
   const strengths = (value as { strengths?: unknown }).strengths
   const risks = (value as { risks?: unknown }).risks
   const performanceScores = (value as { performance_scores?: unknown }).performance_scores
+  const rewriteSuggestions = (value as { rewrite_suggestions?: unknown }).rewrite_suggestions
   const rewrittenMessage = (value as { rewritten_message?: unknown }).rewritten_message
   const nextSteps = (value as { next_steps?: unknown }).next_steps
   const safetyNote = (value as { safety_note?: unknown }).safety_note
@@ -548,7 +889,9 @@ function isReviewResponsePayload(value: unknown): value is ReviewResponsePayload
     isStringArray(strengths) &&
     isStringArray(risks) &&
     (typeof performanceScores === 'undefined' || isReviewPerformanceScores(performanceScores)) &&
-    (typeof rewrittenMessage === 'string' || isReviewRewriteSuggestion(rewrittenMessage)) &&
+    (typeof rewriteSuggestions === 'undefined' ||
+      (Array.isArray(rewriteSuggestions) && rewriteSuggestions.every(isReviewRewriteSuggestion))) &&
+    (typeof rewrittenMessage === 'undefined' || typeof rewrittenMessage === 'string') &&
     isStringArray(nextSteps) &&
     typeof safetyNote === 'string' &&
     hasCompatibleSourceFields
@@ -578,7 +921,10 @@ export function isStoredReviewResult(value: unknown): value is StoredReviewResul
   if (
     !isRecord(request) ||
     typeof request.scenario !== 'string' ||
-    !Array.isArray((request as { dialogue?: unknown }).dialogue) ||
+    (typeof (request as { conversation_id?: unknown }).conversation_id !== 'undefined' &&
+      typeof (request as { conversation_id?: unknown }).conversation_id !== 'string') ||
+    (typeof (request as { dialogue?: unknown }).dialogue !== 'undefined' &&
+      !Array.isArray((request as { dialogue?: unknown }).dialogue)) ||
     !isReviewResponsePayload(response)
   ) {
     return false
@@ -590,17 +936,42 @@ export function isStoredReviewResult(value: unknown): value is StoredReviewResul
 }
 
 function normalizeRewrittenMessage(
-  raw: ReviewResponse['rewritten_message'],
-): ReviewResponse['rewritten_message'] {
+  raw: unknown,
+  suggestions: ReviewRewriteSuggestion[],
+): string {
   if (typeof raw === 'string' && raw.trim().length > 0) {
     return raw
   }
 
-  if (isReviewRewriteSuggestion(raw)) {
-    return raw
+  if (suggestions.length > 0) {
+    return suggestions[0]?.suggested_message ?? reviewSuggestionBypass.suggested_message
   }
 
-  return { ...reviewSuggestionBypass }
+  return reviewSuggestionBypass.suggested_message
+}
+
+function normalizeRewriteSuggestions(
+  rawSuggestions: unknown,
+  rewrittenMessage: unknown,
+): ReviewRewriteSuggestion[] {
+  if (
+    Array.isArray(rawSuggestions) &&
+    rawSuggestions.length > 0 &&
+    rawSuggestions.every(isReviewRewriteSuggestion)
+  ) {
+    return rawSuggestions.map((item) => ({ ...item }))
+  }
+
+  if (typeof rewrittenMessage === 'string' && rewrittenMessage.trim().length > 0) {
+    return [
+      {
+        ...reviewSuggestionBypass,
+        suggested_message: rewrittenMessage.trim(),
+      },
+    ]
+  }
+
+  return [{ ...reviewSuggestionBypass }]
 }
 
 function normalizeReviewResponse(raw: {
@@ -608,12 +979,18 @@ function normalizeReviewResponse(raw: {
   strengths?: unknown
   risks?: unknown
   performance_scores?: unknown
+  rewrite_suggestions?: unknown
   rewritten_message?: unknown
   next_steps?: unknown
   safety_note?: unknown
   is_demo?: unknown
   demo_notice?: unknown
 }): ReviewResponse {
+  const rewriteSuggestions = normalizeRewriteSuggestions(
+    raw.rewrite_suggestions,
+    raw.rewritten_message,
+  )
+
   return {
     summary: typeof raw.summary === 'string' ? raw.summary : '后端返回结构异常，已用本地兜底展示。',
     strengths:
@@ -627,7 +1004,8 @@ function normalizeReviewResponse(raw: {
     performance_scores: isReviewPerformanceScores(raw.performance_scores)
       ? raw.performance_scores
       : { ...demoReviewPerformanceScores },
-    rewritten_message: normalizeRewrittenMessage(raw.rewritten_message as ReviewResponse['rewritten_message']),
+    rewrite_suggestions: rewriteSuggestions,
+    rewritten_message: normalizeRewrittenMessage(raw.rewritten_message, rewriteSuggestions),
     next_steps:
       isStringArray(raw.next_steps) && raw.next_steps.length > 0
         ? raw.next_steps
@@ -644,7 +1022,14 @@ function normalizeReviewResponse(raw: {
 
 function normalizeSimulationResponse(raw: SimulationResponsePayload): SimulationResponse {
   return {
+    conversation_id:
+      typeof raw.conversation_id === 'string' && raw.conversation_id.trim()
+        ? raw.conversation_id
+        : `local-${Date.now()}`,
     replies: raw.replies,
+    archive_context_used: raw.archive_context_used === true,
+    archive_context_summary:
+      typeof raw.archive_context_summary === 'string' ? raw.archive_context_summary : undefined,
     safety_note: raw.safety_note,
     is_demo: typeof raw.is_demo === 'boolean' ? raw.is_demo : false,
     demo_notice:
@@ -728,6 +1113,7 @@ export async function submitAnalyzeRequest(form: AnalyzeRequest): Promise<Analyz
 
 export async function submitSimulationRequest(
   payload: SimulationRequest,
+  signal?: AbortSignal,
 ): Promise<SimulationResponse> {
   const fallback = buildDemoSimulationResponse('后端服务未就绪')
 
@@ -738,9 +1124,25 @@ export async function submitSimulationRequest(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(payload),
+      signal,
     })
 
     if (!response.ok) {
+      if (response.status === 400 || response.status === 422) {
+        let detail = ''
+        try {
+          const raw = (await response.json()) as unknown
+          if (isRecord(raw) && typeof raw.detail === 'string') {
+            detail = raw.detail
+          }
+        } catch {
+          // Keep status fallback below.
+        }
+        throw new SimulationRequestError(
+          detail || `模拟请求被后端拒绝（接口返回 ${response.status}）`,
+        )
+      }
+
       return buildDemoSimulationResponse(`接口返回 ${response.status}`)
     }
 
@@ -752,6 +1154,10 @@ export async function submitSimulationRequest(
 
     return normalizeSimulationResponse(raw)
   } catch (error) {
+    if (error instanceof SimulationRequestError || (error instanceof Error && error.name === 'AbortError')) {
+      throw error
+    }
+
     if (error instanceof Error) {
       return buildDemoSimulationResponse(`请求失败：${error.message}`)
     }
@@ -772,11 +1178,25 @@ export async function submitSimulationStreamRequest(
     body: JSON.stringify(payload),
   })
 
-  if (!response.ok || !response.body) {
-    throw new Error(`stream request failed: ${response.status}`)
+  if (!response.ok) {
+    let detail = ''
+    try {
+      const raw = (await response.json()) as unknown
+      if (isRecord(raw) && typeof raw.detail === 'string') {
+        detail = raw.detail
+      }
+    } catch {
+      // Ignore malformed error bodies; the status code is still enough context.
+    }
+    throw new SimulationStreamRequestError(
+      detail || `实时回复请求失败（接口返回 ${response.status}）`,
+      false,
+    )
   }
 
-  handlers.onStart?.()
+  if (!response.body) {
+    throw new SimulationStreamRequestError('stream response body missing', false)
+  }
 
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
@@ -804,6 +1224,10 @@ export async function submitSimulationStreamRequest(
         handlers.onReply?.(event.reply)
       }
 
+      if (event.type === 'start') {
+        handlers.onStart?.(event.conversation_id)
+      }
+
       if (event.type === 'final') {
         finalResponse = normalizeSimulationResponse(event.response)
       }
@@ -825,13 +1249,17 @@ export async function submitSimulationStreamRequest(
       handlers.onReply?.(event.reply)
     }
 
+    if (event.type === 'start') {
+      handlers.onStart?.(event.conversation_id)
+    }
+
     if (event.type === 'final') {
       finalResponse = normalizeSimulationResponse(event.response)
     }
   }
 
   if (!finalResponse) {
-    throw new Error('stream final response missing')
+    throw new SimulationStreamRequestError('stream final response missing', false)
   }
 
   return finalResponse
@@ -849,6 +1277,19 @@ export async function submitReviewRequest(payload: ReviewRequest): Promise<Revie
       body: JSON.stringify(payload),
     })
 
+    if (!response.ok && response.status === 400) {
+      let detail = ''
+      try {
+        const raw = (await response.json()) as unknown
+        if (isRecord(raw) && typeof raw.detail === 'string') {
+          detail = raw.detail
+        }
+      } catch {
+        // malformed error bodies still map to a recoverable memory-missing message.
+      }
+      throw new Error(detail || '未找到后端对话记忆，请回到模拟页重新演练。')
+    }
+
     if (!response.ok) {
       return buildDemoReviewResponse(`接口返回 ${response.status}`, payload)
     }
@@ -862,6 +1303,10 @@ export async function submitReviewRequest(payload: ReviewRequest): Promise<Revie
     return normalizeReviewResponse(raw)
   } catch (error) {
     if (error instanceof Error) {
+      if (error.message.includes('后端对话记忆') || error.message.includes('重新演练')) {
+        throw error
+      }
+
       return buildDemoReviewResponse(`请求失败：${error.message}`, payload)
     }
 

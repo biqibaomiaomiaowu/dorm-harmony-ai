@@ -22,6 +22,8 @@ export interface EventRecordCreate {
   severity: number
   frequency: ArchiveFrequency
   emotion: ArchiveEmotion
+  emotions: ArchiveEmotion[]
+  primary_emotion: ArchiveEmotion
   has_communicated: boolean
   has_conflict: boolean
   description: string
@@ -29,9 +31,13 @@ export interface EventRecordCreate {
 
 export interface EventRecordForm extends AnalyzeRequest {
   event_date: string
+  emotions: string[]
+  primary_emotion: string
 }
 
-export interface EventRecord extends EventRecordCreate {
+export interface EventRecord extends Omit<EventRecordCreate, 'emotions' | 'primary_emotion'> {
+  emotions?: ArchiveEmotion[]
+  primary_emotion?: ArchiveEmotion
   id: string
   created_at: string
   single_analysis: AnalyzeApiResponse
@@ -100,6 +106,8 @@ const EMOTION_MAP: Record<string, ArchiveEmotion> = {
   angry: 'angry',
   helpless: 'helpless',
   depressed: 'depressed',
+  无奈: 'helpless',
+  压抑: 'depressed',
 }
 
 export const eventTypeLabels: Record<ArchiveEventType | string, string> = {
@@ -136,6 +144,24 @@ export const emotionLabels: Record<ArchiveEmotion | string, string> = {
   repressed: '压抑',
 }
 
+function mapEmotion(value: string | undefined): ArchiveEmotion | undefined {
+  const normalized = value?.trim()
+  return normalized ? EMOTION_MAP[normalized] : undefined
+}
+
+function normalizeEmotionSelection(form: EventRecordForm) {
+  const selected = form.emotions.length > 0 ? form.emotions : [form.primary_emotion || form.emotion]
+  const emotions = Array.from(
+    new Set(selected.map(mapEmotion).filter((emotion): emotion is ArchiveEmotion => Boolean(emotion))),
+  )
+  const primaryEmotion = mapEmotion(form.primary_emotion) ?? emotions[0] ?? mapEmotion(form.emotion) ?? 'helpless'
+
+  return {
+    primaryEmotion,
+    emotions: emotions.includes(primaryEmotion) ? emotions : [primaryEmotion, ...emotions],
+  }
+}
+
 export function formatLocalDate(date = new Date()) {
   const year = date.getFullYear()
   const month = `${date.getMonth() + 1}`.padStart(2, '0')
@@ -145,12 +171,16 @@ export function formatLocalDate(date = new Date()) {
 }
 
 export function buildEventRecordCreate(form: EventRecordForm): EventRecordCreate {
+  const { primaryEmotion, emotions } = normalizeEmotionSelection(form)
+
   return {
     event_date: form.event_date,
     event_type: EVENT_TYPE_MAP[form.event_type] ?? 'emotion',
     severity: Number(form.severity) || 1,
     frequency: FREQUENCY_MAP[form.frequency] ?? 'occasional',
-    emotion: EMOTION_MAP[form.emotion] ?? 'helpless',
+    emotion: primaryEmotion,
+    emotions,
+    primary_emotion: primaryEmotion,
     has_communicated: form.has_communicated === true,
     has_conflict: form.has_conflict === true,
     description: form.description.trim(),
@@ -216,6 +246,8 @@ function isEventRecord(value: unknown): value is EventRecord {
     typeof value.severity === 'number' &&
     typeof value.frequency === 'string' &&
     typeof value.emotion === 'string' &&
+    (typeof value.primary_emotion === 'undefined' || typeof value.primary_emotion === 'string') &&
+    (typeof value.emotions === 'undefined' || isStringArray(value.emotions)) &&
     typeof value.has_communicated === 'boolean' &&
     typeof value.has_conflict === 'boolean' &&
     typeof value.description === 'string' &&
