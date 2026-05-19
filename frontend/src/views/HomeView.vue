@@ -3,6 +3,13 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { fetchArchiveAnalysis, type ArchiveAnalysisResponse } from '@/data/eventArchive'
 
+interface FeatureIntroSlide {
+  title: string
+  icon: string
+  text: string
+  points: string[]
+}
+
 const featureCards = [
   {
     title: 'AI 深度分析',
@@ -24,6 +31,52 @@ const featureCards = [
     text: '追踪长期互动数据，生成可视化的关系健康报告，见证你们的共同成长。',
     action: '查看报告',
     tone: 'yellow',
+  },
+]
+
+const featureIntroSlides: FeatureIntroSlide[] = [
+  {
+    title: '事件记录',
+    icon: 'history',
+    text: '先把宿舍事件记录清楚，后续分析、模拟和复盘都会以这些档案为基础。',
+    points: [
+      '当前情绪可多选，用来保留当时更完整的感受线索。',
+      '主要情绪只选一个，用来标记这次事件最核心的情绪倾向。',
+      '事件日期、发生频率、严重程度、是否已经沟通和主要情绪会影响压力评分。',
+    ],
+  },
+  {
+    title: 'AI 深度分析',
+    icon: 'psychology_alt',
+    text: 'AI 会自动读取事件档案，汇总近期宿舍关系压力和主要冲突来源。',
+    points: [
+      '自动读取事件档案后给出压力趋势、主要来源和情绪关键词。',
+      '分析结果会给出沟通建议，但只用于关系压力提示，不作为心理诊断。',
+      '记录越具体，AI 给出的建议和分析越贴近真实场景。',
+    ],
+  },
+  {
+    title: '沟通模拟器',
+    icon: 'forum',
+    text: '你可以在安全沙盒里先练习表达，再决定现实沟通时怎么开口。',
+    points: [
+      '自定义 AI 舍友时，直接程度越高回复越直白，情绪反应越高越容易激动，回避倾向越高越可能闪躲，共情程度越高越愿意理解，解决意愿越高越愿意协商，边界敏感度越高越在意私人空间和规则。',
+      '模拟开始后不能编辑或新增 AI 舍友，需要点击重置后再调整。',
+      '接入事件档案可以让 AI 知道事件档案记录了什么，从而围绕真实记录回应。',
+      'AI 舍友回复途中可以插话；AI 舍友不是固定只回复一条消息。',
+      'AI 舍友互相之间发的消息是互相可见的，会基于当前对话继续回应。',
+      'AI 舍友不会输出攻击性发言，模拟重点是练习温和、具体、可执行的沟通。',
+    ],
+  },
+  {
+    title: '沟通复盘',
+    icon: 'summarize',
+    text: '沟通复盘会根据沟通模拟对话总结表现，帮助你整理下一步表达。',
+    points: [
+      '根据沟通模拟对话总结舍友反馈、表达亮点和容易误解的位置。',
+      '复盘会给出建议，帮助你把现实沟通说得更温和、具体、可执行。',
+      '建议仅用于沟通练习，如有现实安全风险，应优先寻求线下支持。',
+    ],
   },
 ]
 
@@ -52,6 +105,12 @@ const privacyConfirmRef = ref<HTMLButtonElement | null>(null)
 const restoreFocusTarget = ref<HTMLElement | null>(null)
 const shouldRestoreFocusAfterModalLeave = ref(false)
 const shouldOpenPrivacyAfterSafetyLeave = ref(false)
+const showFeatureIntroModal = ref(false)
+const featureIntroModalRef = ref<HTMLElement | null>(null)
+const featureIntroConfirmRef = ref<HTMLButtonElement | null>(null)
+const featureIntroIndex = ref(0)
+const isInitialSafetyModal = ref(false)
+const shouldOpenFeatureIntroAfterSafetyLeave = ref(false)
 const homeMeterAnalysis = ref<ArchiveAnalysisResponse>(HOME_METER_FALLBACK)
 const homeMeterError = ref('')
 const isHomeMeterLoading = ref(false)
@@ -224,6 +283,7 @@ function openSafetyModal(event?: MouseEvent) {
         : null
   shouldRestoreFocusAfterModalLeave.value = false
   shouldOpenPrivacyAfterSafetyLeave.value = false
+  isInitialSafetyModal.value = false
   showSafetyModal.value = true
   focusInitialModalControl()
 }
@@ -245,6 +305,12 @@ function openPrivacyModal(event?: MouseEvent) {
   }
 }
 
+function focusFeatureIntroControl() {
+  nextTick(() => {
+    featureIntroConfirmRef.value?.focus()
+  })
+}
+
 function restoreFocusAfterModalClose() {
   nextTick(() => {
     const target = restoreFocusTarget.value
@@ -258,7 +324,7 @@ function restoreFocusAfterModalClose() {
   })
 }
 
-function featureActionTarget(action: string): 'record' | 'simulate' | 'review' | null {
+function featureActionTarget(action: string): 'record' | 'simulate' | 'analysis' | null {
   if (action === '开启分析') {
     return 'record'
   }
@@ -268,10 +334,78 @@ function featureActionTarget(action: string): 'record' | 'simulate' | 'review' |
   }
 
   if (action === '查看报告') {
-    return 'review'
+    return 'analysis'
   }
 
   return null
+}
+
+function openFeatureIntroModal(event?: MouseEvent) {
+  if (event?.currentTarget instanceof HTMLElement) {
+    restoreFocusTarget.value = event.currentTarget
+  } else if (!restoreFocusTarget.value && document.activeElement instanceof HTMLElement) {
+    restoreFocusTarget.value = document.activeElement
+  }
+  shouldRestoreFocusAfterModalLeave.value = false
+  shouldOpenFeatureIntroAfterSafetyLeave.value = false
+  featureIntroIndex.value = 0
+  showFeatureIntroModal.value = true
+  focusFeatureIntroControl()
+}
+
+function closeFeatureIntroModal() {
+  showFeatureIntroModal.value = false
+  shouldRestoreFocusAfterModalLeave.value = true
+}
+
+function showPreviousFeatureIntro() {
+  featureIntroIndex.value =
+    (featureIntroIndex.value - 1 + featureIntroSlides.length) % featureIntroSlides.length
+}
+
+function showNextFeatureIntro() {
+  featureIntroIndex.value = (featureIntroIndex.value + 1) % featureIntroSlides.length
+}
+
+function handleFeatureIntroModalAfterLeave() {
+  if (shouldRestoreFocusAfterModalLeave.value) {
+    shouldRestoreFocusAfterModalLeave.value = false
+    restoreFocusAfterModalClose()
+  }
+}
+
+function handleFeatureIntroKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeFeatureIntroModal()
+    return
+  }
+
+  if (event.key !== 'Tab') {
+    return
+  }
+
+  const focusableElements = getModalFocusableElements(featureIntroModalRef.value)
+
+  if (focusableElements.length === 0) {
+    event.preventDefault()
+    featureIntroModalRef.value?.focus()
+    return
+  }
+
+  const firstElement = focusableElements[0]!
+  const lastElement = focusableElements[focusableElements.length - 1]!
+
+  if (event.shiftKey && document.activeElement === firstElement) {
+    event.preventDefault()
+    lastElement.focus()
+    return
+  }
+
+  if (!event.shiftKey && document.activeElement === lastElement) {
+    event.preventDefault()
+    firstElement.focus()
+  }
 }
 
 function closeSafetyModal() {
@@ -283,6 +417,8 @@ function closeSafetyModal() {
 
   showSafetyModal.value = false
   shouldOpenPrivacyAfterSafetyLeave.value = false
+  shouldOpenFeatureIntroAfterSafetyLeave.value = isInitialSafetyModal.value
+  isInitialSafetyModal.value = false
   shouldRestoreFocusAfterModalLeave.value = true
 }
 
@@ -299,11 +435,24 @@ function handleSafetyModalAfterLeave() {
     return
   }
 
+  if (shouldOpenFeatureIntroAfterSafetyLeave.value) {
+    shouldOpenFeatureIntroAfterSafetyLeave.value = false
+    featureIntroIndex.value = 0
+    showFeatureIntroModal.value = true
+    focusFeatureIntroControl()
+    return
+  }
+
   if (shouldRestoreFocusAfterModalLeave.value && !showPrivacyModal.value) {
     shouldRestoreFocusAfterModalLeave.value = false
     restoreFocusAfterModalClose()
   }
 }
+
+const currentFeatureIntroSlide = computed<FeatureIntroSlide>(() => {
+  return featureIntroSlides[featureIntroIndex.value] ?? featureIntroSlides[0]!
+})
+const featureIntroPoints = computed(() => currentFeatureIntroSlide.value.points)
 
 function handlePrivacyModalAfterLeave() {
   if (shouldRestoreFocusAfterModalLeave.value) {
@@ -386,6 +535,7 @@ onMounted(() => {
   void loadHomeMeterAnalysis()
 
   if (!hasAcknowledgedSafetyModal()) {
+    isInitialSafetyModal.value = true
     showSafetyModal.value = true
     focusInitialModalControl()
   }
@@ -498,6 +648,95 @@ onBeforeUnmount(() => {
       </div>
     </Transition>
 
+    <Transition name="feature-intro-modal" @after-leave="handleFeatureIntroModalAfterLeave">
+      <div
+        v-if="showFeatureIntroModal"
+        class="safety-modal-overlay"
+        role="presentation"
+        @click.self="closeFeatureIntroModal"
+      >
+        <section
+          ref="featureIntroModalRef"
+          class="feature-intro-modal safety-modal pop-card pop-shadow"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="feature-intro-title"
+          tabindex="-1"
+          @keydown="handleFeatureIntroKeydown"
+        >
+          <button
+            class="modal-close material-symbol"
+            type="button"
+            aria-label="关闭功能介绍"
+            @click="closeFeatureIntroModal"
+          >
+            close
+          </button>
+          <p class="eyebrow pill-label">
+            <span class="material-symbol" aria-hidden="true">auto_stories</span>
+            功能介绍
+          </p>
+          <h2 id="feature-intro-title">{{ currentFeatureIntroSlide.title }}</h2>
+
+          <Transition name="feature-intro-slide" mode="out-in">
+            <article :key="currentFeatureIntroSlide.title" class="feature-intro-slide">
+              <p class="material-symbol feature-intro-slide-icon" aria-hidden="true">
+                {{ currentFeatureIntroSlide.icon }}
+              </p>
+              <p class="feature-intro-slide-text">{{ currentFeatureIntroSlide.text }}</p>
+              <ul class="feature-intro-points">
+                <li v-for="point in featureIntroPoints" :key="point">{{ point }}</li>
+              </ul>
+            </article>
+          </Transition>
+
+          <div class="feature-intro-controls">
+            <button
+              class="feature-intro-arrow"
+              type="button"
+              aria-label="上一个功能介绍"
+              @click="showPreviousFeatureIntro"
+            >
+              <span class="material-symbol" aria-hidden="true">chevron_left</span>
+            </button>
+
+            <div class="feature-intro-dots" aria-label="功能介绍步骤">
+              <button
+                v-for="(slide, index) in featureIntroSlides"
+                :key="slide.title"
+                class="feature-intro-dot"
+                :class="{ active: index === featureIntroIndex }"
+                :aria-label="`切换到${slide.title}`"
+                :aria-current="index === featureIntroIndex ? 'step' : undefined"
+                type="button"
+                @click="featureIntroIndex = index"
+              />
+            </div>
+
+            <button
+              class="feature-intro-arrow"
+              type="button"
+              aria-label="下一个功能介绍"
+              @click="showNextFeatureIntro"
+            >
+              <span class="material-symbol" aria-hidden="true">chevron_right</span>
+            </button>
+          </div>
+
+          <div class="modal-actions">
+            <button
+              ref="featureIntroConfirmRef"
+              class="primary-action pop-shadow"
+              type="button"
+              @click="closeFeatureIntroModal"
+            >
+              我知道了
+            </button>
+          </div>
+        </section>
+      </div>
+    </Transition>
+
     <section class="hero-section page-pop-in">
       <div class="hero-copy">
         <p class="eyebrow pill-label">
@@ -533,6 +772,9 @@ onBeforeUnmount(() => {
             <span class="action-icon material-symbol" aria-hidden="true">arrow_forward</span>
           </RouterLink>
           <button class="secondary-action" type="button" @click="openSafetyModal">安全说明</button>
+          <button class="secondary-action" type="button" @click="openFeatureIntroModal">
+            功能介绍
+          </button>
         </div>
       </div>
     </section>

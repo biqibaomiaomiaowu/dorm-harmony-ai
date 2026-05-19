@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { fetchEventArchive } from '@/data/eventArchive'
@@ -94,6 +94,24 @@ const systemTurnNotice = ref('')
 const roommates = ref<RoommateProfile[]>(createDefaultRoommates())
 const editingIndex = ref<number | null>(null)
 const roommateDraft = ref<RoommateDraft | null>(null)
+const showRoommateLockedModal = ref(false)
+const roommateLockedModalRef = ref<HTMLElement | null>(null)
+const roommateLockedConfirmRef = ref<HTMLButtonElement | null>(null)
+
+const focusableSelector = [
+  `button:not([disabled]):not([aria-disabled="true"])`,
+  'a[href]',
+  'textarea:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',')
+
+function getModalFocusableElements(modalRef: HTMLElement | null) {
+  return Array.from(modalRef?.querySelectorAll<HTMLElement>(focusableSelector) ?? []).filter(
+    (element) => !element.hasAttribute('disabled') && element.tabIndex !== -1,
+  )
+}
 
 const archiveEventCount = ref(0)
 const archiveLoadError = ref('')
@@ -239,7 +257,12 @@ function createDraft(roommate?: RoommateProfile): RoommateDraft {
 }
 
 function openAddRoommate() {
-  if (roommates.value.length >= 5 || hasActiveConversation.value) {
+  if (roommates.value.length >= 5 && !hasActiveConversation.value) {
+    return
+  }
+
+  if (hasActiveConversation.value) {
+    openRoommateLockedModal()
     return
   }
 
@@ -249,6 +272,7 @@ function openAddRoommate() {
 
 function openEditRoommate(index: number) {
   if (hasActiveConversation.value) {
+    openRoommateLockedModal()
     return
   }
 
@@ -309,6 +333,51 @@ function saveDraft() {
 
   saveRoommates()
   closeRoommateEditor()
+}
+
+function openRoommateLockedModal() {
+  showRoommateLockedModal.value = true
+  nextTick(() => {
+    roommateLockedConfirmRef.value?.focus()
+  })
+}
+
+function closeRoommateLockedModal() {
+  showRoommateLockedModal.value = false
+}
+
+function handleRoommateLockedKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeRoommateLockedModal()
+    return
+  }
+
+  if (event.key !== 'Tab') {
+    return
+  }
+
+  const focusableElements = getModalFocusableElements(roommateLockedModalRef.value)
+
+  if (focusableElements.length === 0) {
+    event.preventDefault()
+    roommateLockedModalRef.value?.focus()
+    return
+  }
+
+  const firstElement = focusableElements[0]!
+  const lastElement = focusableElements[focusableElements.length - 1]!
+
+  if (event.shiftKey && document.activeElement === firstElement) {
+    event.preventDefault()
+    lastElement.focus()
+    return
+  }
+
+  if (!event.shiftKey && document.activeElement === lastElement) {
+    event.preventDefault()
+    firstElement.focus()
+  }
 }
 
 function deleteDraftRoommate() {
@@ -1064,7 +1133,8 @@ function resetConversation() {
           <button
             class="roommate-add-btn pop-shadow"
             type="button"
-            :disabled="!canAddRoommate"
+            :disabled="roommates.length >= 5 && !hasActiveConversation"
+            :aria-disabled="hasActiveConversation"
             @click="openAddRoommate"
           >
             <span class="material-symbol" aria-hidden="true">add</span>
@@ -1081,7 +1151,7 @@ function resetConversation() {
             <button
               class="roommate-edit-btn"
               type="button"
-              :disabled="!canEditRoommates"
+              :aria-disabled="!canEditRoommates"
               :aria-label="`编辑${roommate.name}`"
               @click="openEditRoommate(index)"
             >
@@ -1362,6 +1432,40 @@ function resetConversation() {
             <button class="primary-action pop-shadow" type="submit">保存</button>
           </footer>
         </form>
+      </div>
+    </Transition>
+
+    <Transition name="modal-fade">
+      <div
+        v-if="showRoommateLockedModal"
+        class="safety-modal-overlay"
+        role="presentation"
+        @click.self="closeRoommateLockedModal"
+      >
+        <section
+          ref="roommateLockedModalRef"
+          class="roommate-locked-modal safety-modal pop-card pop-shadow"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="roommate-locked-modal-title"
+          tabindex="-1"
+          @keydown="handleRoommateLockedKeydown"
+        >
+          <h2 id="roommate-locked-modal-title">功能限制提示</h2>
+          <p class="roommate-locked-copy">
+            对话模拟时不能使用舍友编辑和添加功能，请点击重置按钮后再编辑。
+          </p>
+          <div class="modal-actions">
+            <button
+              ref="roommateLockedConfirmRef"
+              class="primary-action pop-shadow"
+              type="button"
+              @click="closeRoommateLockedModal"
+            >
+              我知道了
+            </button>
+          </div>
+        </section>
       </div>
     </Transition>
   </main>
