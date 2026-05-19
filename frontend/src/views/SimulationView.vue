@@ -71,6 +71,7 @@ const isDemoResult = ref(false)
 const simulationNotice = ref('')
 const safetyNote = ref('')
 const conversationMessages = ref<ReviewDialogueLine[]>([])
+const cachedConversationRoommates = ref<RoommateProfile[]>([])
 const generationStatus = ref('')
 const generationRunId = ref(0)
 const isContinuationRequestActive = ref(false)
@@ -161,13 +162,16 @@ function loadCustomScenarios() {
   try {
     const raw = localStorage.getItem(customScenariosStorageKey)
     const parsed = raw ? (JSON.parse(raw) as unknown) : []
+    const defaultScenarioSet = new Set(simulationScenarios)
     customScenarios.value = Array.isArray(parsed)
       ? parsed
           .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
           .map((item) => item.trim())
+          .filter((item) => !defaultScenarioSet.has(item))
           .filter((item, index, source) => source.indexOf(item) === index)
           .slice(0, 8)
       : []
+    saveCustomScenarios()
   } catch {
     customScenarios.value = []
   }
@@ -404,6 +408,7 @@ function setDefaultSimulationState() {
   currentScene.value = defaultScene
   userMessage.value = ''
   conversationMessages.value = []
+  cachedConversationRoommates.value = []
   generationStatus.value = ''
   submitError.value = ''
   isDemoResult.value = false
@@ -559,9 +564,13 @@ function hydrateFromSimulationCache() {
       return
     }
 
-    currentScene.value = parsed.request.scenario || defaultScene
+    const cachedScene = parsed.request.scenario || defaultScene
+    currentScene.value = scenarioButtons.value.includes(cachedScene) ? cachedScene : defaultScene
     userMessage.value = parsed.request.user_message || ''
     conversationMessages.value = parsed.dialogue ? [...parsed.dialogue] : []
+    cachedConversationRoommates.value = Array.isArray(parsed.request.roommates)
+      ? normalizeRoommates(parsed.request.roommates)
+      : []
     isDemoResult.value = parsed.response.is_demo
     simulationNotice.value = parsed.response.is_demo
       ? parsed.response.demo_notice
@@ -600,13 +609,16 @@ function speakerLabel(speaker: ReviewDialogueLine['speaker']) {
     return '系统'
   }
 
-  const roommate = roommates.value.find((item) => item.id === speaker)
+  const roommate =
+    cachedConversationRoommates.value.find((item) => item.id === speaker) ??
+    roommates.value.find((item) => item.id === speaker)
   return roommate?.name ?? speaker.replace('roommate_', '舍友 ')
 }
 
 function roommateForSpeaker(speaker: ReviewDialogueLine['speaker']) {
   return speaker.startsWith('roommate_')
-    ? roommates.value.find((item) => item.id === speaker)
+    ? (cachedConversationRoommates.value.find((item) => item.id === speaker) ??
+        roommates.value.find((item) => item.id === speaker))
     : undefined
 }
 
@@ -685,6 +697,34 @@ function buildSingleReplyContext(isContinuation: boolean, replyCount: number) {
 
 function selectScenario(scene: string) {
   currentScene.value = scene
+}
+
+function isCustomScenario(scene: string) {
+  return customScenarios.value.includes(scene)
+}
+
+function deleteCustomScenario(scene: string) {
+  const wasCurrentScene = currentScene.value === scene
+  customScenarios.value = customScenarios.value.filter((item) => item !== scene)
+  saveCustomScenarios()
+  if (customSceneDraft.value.trim() === scene) {
+    customSceneDraft.value = ''
+  }
+  customSceneError.value = ''
+
+  try {
+    const raw = localStorage.getItem(SIMULATION_RESULT_STORAGE_KEY)
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null
+    if (isStoredSimulationResult(parsed) && parsed.request.scenario === scene) {
+      localStorage.removeItem(SIMULATION_RESULT_STORAGE_KEY)
+    }
+  } catch {
+    // ignore malformed local cache
+  }
+
+  if (wasCurrentScene) {
+    resetConversation()
+  }
 }
 
 function applyResultMeta(response: SimulationResponse) {
@@ -986,17 +1026,31 @@ function resetConversation() {
       </Transition>
       <p class="simulation-subtitle chip-text">场景选择</p>
       <TransitionGroup name="scene-list" tag="div" class="simulation-scenes">
-        <button
+        <div
           v-for="scene in scenarioButtons"
           :key="scene"
-          class="scene-btn pop-shadow"
-          :class="{ active: scene === currentScene }"
-          type="button"
-          :aria-pressed="scene === currentScene"
-          @click="selectScenario(scene)"
+          class="scene-item"
+          :class="{ 'scene-item-custom': isCustomScenario(scene) }"
         >
-          {{ scene }}
-        </button>
+          <button
+            class="scene-btn pop-shadow"
+            :class="{ active: scene === currentScene }"
+            type="button"
+            :aria-pressed="scene === currentScene"
+            @click="selectScenario(scene)"
+          >
+            {{ scene }}
+          </button>
+          <button
+            v-if="isCustomScenario(scene)"
+            class="scene-delete-btn"
+            type="button"
+            :aria-label="`删除自定义场景：${scene}`"
+            @click.stop="deleteCustomScenario(scene)"
+          >
+            <span class="material-symbol" aria-hidden="true">close</span>
+          </button>
+        </div>
       </TransitionGroup>
     </section>
 

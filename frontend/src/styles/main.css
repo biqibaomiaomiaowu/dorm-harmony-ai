@@ -4071,6 +4071,12 @@ textarea:focus {
   gap: 10px;
 }
 
+.scene-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .scene-btn {
   height: 44px;
   border: 2px solid var(--ink);
@@ -4104,6 +4110,38 @@ textarea:focus {
   background: var(--primary-container);
   box-shadow: 4px 4px 0 0 var(--shadow-dark);
   color: #ffffff;
+}
+
+.scene-delete-btn {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  background: var(--surface-container-low);
+  box-shadow: 2px 2px 0 0 var(--shadow-dark);
+  color: var(--ink);
+  transition:
+    transform 160ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    background-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.scene-delete-btn span {
+  font-size: 1.05rem;
+  font-weight: 900;
+}
+
+.scene-delete-btn:hover {
+  background: var(--error-soft);
+  transform: translateY(-1px) rotate(6deg);
+}
+
+.scene-delete-btn:active {
+  box-shadow: 1px 1px 0 0 var(--shadow-dark);
+  transform: translateY(1px) scale(0.96);
 }
 
 .simulation-layout {
