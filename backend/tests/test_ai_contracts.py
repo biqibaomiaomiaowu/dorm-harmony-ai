@@ -4,6 +4,7 @@ import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import ValidationError
 
+import app.schemas as schemas
 from app.ai_prompts import (
     ARCHIVE_INSIGHT_SYSTEM_PROMPT,
     REVIEW_SYSTEM_PROMPT,
@@ -30,6 +31,24 @@ from app.schemas import (
 
 
 REVIEW_PERFORMANCE_SCORES = {"clarity": 82, "empathy": 76, "resolution": 71}
+SIMULATE_SAFETY_NOTE = (
+    "本回复仅用于宿舍沟通演练，不代表真实舍友想法，不进行心理诊断，"
+    "不进行医学判断，不进行人格评价。如有现实安全风险，请联系辅导员、"
+    "心理老师、家人或可信任同学。"
+)
+REVIEW_SAFETY_NOTE = (
+    "本复盘仅用于沟通训练建议，不代表真实舍友想法，不进行心理诊断，"
+    "不进行医学判断，不进行人格评价。如压力持续升高，请寻求现实支持或联系辅导员、心理老师。"
+)
+REVIEW_REWRITE_SUGGESTIONS = [
+    {
+        "message_index": 0,
+        "original_message": "你能不能小声点？",
+        "issue": "请求较笼统。",
+        "suggested_message": "我最近睡眠受影响，能不能 11 点后戴耳机？",
+        "reason": "把影响和行动说清楚。",
+    }
+]
 
 
 def test_analyze_response_rejects_unknown_risk_level():
@@ -70,6 +89,55 @@ def test_simulate_request_normalizes_blank_risk_level_to_none():
     assert request.risk_level is None
 
 
+def test_analyze_request_keeps_legacy_emotion_as_primary_emotion():
+    request = AnalyzeRequest(
+        event_type="noise",
+        severity=4,
+        frequency="weekly_multiple",
+        emotion="anxious",
+        has_communicated=False,
+        has_conflict=True,
+        description="舍友晚上打游戏声音很大。",
+    )
+
+    assert request.emotion == "anxious"
+    assert request.primary_emotion == "anxious"
+    assert request.emotions == ["anxious"]
+
+
+def test_analyze_request_rejects_conflicting_primary_emotion_and_legacy_emotion():
+    with pytest.raises(ValidationError):
+        AnalyzeRequest(
+            event_type="noise",
+            severity=4,
+            frequency="weekly_multiple",
+            emotion="angry",
+            emotions=["anxious", "angry"],
+            primary_emotion="anxious",
+            has_communicated=False,
+            has_conflict=True,
+            description="舍友晚上打游戏声音很大。",
+        )
+
+
+def test_simulate_request_supports_continuation_without_user_message_and_max_replies():
+    request = SimulateRequest(
+        conversation_id="conversation-1",
+        scenario="噪音冲突",
+        is_continuation=True,
+        max_replies=1,
+    )
+
+    assert request.user_message is None
+    assert request.is_continuation is True
+    assert request.max_replies == 1
+
+
+def test_simulate_request_requires_user_message_for_new_user_turn():
+    with pytest.raises(ValidationError):
+        SimulateRequest(scenario="噪音冲突")
+
+
 def test_simulate_request_accepts_prior_dialogue_for_continuous_conversation():
     request = SimulateRequest(
         scenario="舍友晚上打游戏声音很大，影响睡眠。",
@@ -83,6 +151,295 @@ def test_simulate_request_accepts_prior_dialogue_for_continuous_conversation():
 
     assert len(request.dialogue) == 2
     assert request.dialogue[1].speaker == "roommate_a"
+
+
+def test_review_request_accepts_dynamic_roommate_dialogue_speakers():
+    request = ReviewRequest(
+        scenario="自定义舍友沟通",
+        dialogue=[
+            {"speaker": "user", "message": "我想商量一下晚上的声音。"},
+            {"speaker": "roommate_custom_4", "message": "我尽量注意。"},
+        ],
+    )
+
+    assert request.dialogue[1].speaker == "roommate_custom_4"
+
+
+def test_roommate_profile_accepts_presets_and_custom_traits():
+    direct = schemas.RoommateProfile(
+        id="roommate_a",
+        name="舍友 A",
+        personality_tag="直接型",
+        tag_mode="preset",
+        preset_key="direct",
+        avatar="nailong",
+    )
+    custom = schemas.RoommateProfile(
+        id="roommate_quiet_custom",
+        name="小林",
+        personality_tag="慢热型",
+        tag_mode="custom",
+        avatar="capybara_lulu",
+        traits={
+            "directness": 2,
+            "emotional_reactivity": 1,
+            "avoidance": 4,
+            "empathy": 3,
+            "solution_willingness": 2,
+            "boundary_sensitivity": 5,
+        },
+    )
+
+    assert direct.traits.directness == 5
+    assert direct.traits.emotional_reactivity == 3
+    assert direct.traits.avoidance == 1
+    assert direct.traits.empathy == 2
+    assert direct.traits.solution_willingness == 3
+    assert direct.traits.boundary_sensitivity == 4
+    assert direct.avatar == "nailong"
+    assert custom.traits.boundary_sensitivity == 5
+    assert custom.avatar == "capybara_lulu"
+
+
+def test_roommate_profile_rejects_custom_without_complete_traits():
+    with pytest.raises(ValidationError):
+        schemas.RoommateProfile(
+            id="roommate_quiet_custom",
+            name="小林",
+            personality_tag="慢热型",
+            tag_mode="custom",
+        )
+
+    with pytest.raises(ValidationError):
+        schemas.RoommateProfile(
+            id="roommate_quiet_custom",
+            name="小林",
+            personality_tag="慢热型",
+            tag_mode="custom",
+            traits={
+                "directness": 2,
+                "emotional_reactivity": 1,
+                "avoidance": 4,
+                "empathy": 3,
+                "solution_willingness": 2,
+            },
+        )
+
+
+def test_roommate_profile_rejects_id_outside_roommate_namespace():
+    with pytest.raises(ValidationError):
+        schemas.RoommateProfile(
+            id="quiet_custom",
+            name="小林",
+            personality_tag="慢热型",
+            tag_mode="custom",
+            traits={
+                "directness": 2,
+                "emotional_reactivity": 1,
+                "avoidance": 4,
+                "empathy": 3,
+                "solution_willingness": 2,
+                "boundary_sensitivity": 5,
+            },
+        )
+
+
+def test_roommate_profile_accepts_trait_bounds_and_rejects_out_of_range_traits():
+    minimum = schemas.RoommateProfile(
+        id="roommate_minimum_custom",
+        name="小周",
+        personality_tag="低反应型",
+        tag_mode="custom",
+        traits={
+            "directness": 0,
+            "emotional_reactivity": 0,
+            "avoidance": 0,
+            "empathy": 0,
+            "solution_willingness": 0,
+            "boundary_sensitivity": 0,
+        },
+    )
+    maximum = schemas.RoommateProfile(
+        id="roommate_maximum_custom",
+        name="小吴",
+        personality_tag="高反应型",
+        tag_mode="custom",
+        traits={
+            "directness": 5,
+            "emotional_reactivity": 5,
+            "avoidance": 5,
+            "empathy": 5,
+            "solution_willingness": 5,
+            "boundary_sensitivity": 5,
+        },
+    )
+
+    assert minimum.traits.directness == 0
+    assert maximum.traits.boundary_sensitivity == 5
+
+    with pytest.raises(ValidationError):
+        schemas.RoommateProfile(
+            id="roommate_invalid_custom",
+            name="小许",
+            personality_tag="越界型",
+            tag_mode="custom",
+            traits={
+                "directness": 6,
+                "emotional_reactivity": 3,
+                "avoidance": 2,
+                "empathy": 3,
+                "solution_willingness": 4,
+                "boundary_sensitivity": 5,
+            },
+        )
+
+
+def test_simulate_request_defaults_to_three_roommates_and_rejects_duplicate_ids():
+    request = SimulateRequest(scenario="噪音冲突", user_message="能不能小声一点？")
+
+    assert [roommate.id for roommate in request.roommates] == [
+        "roommate_a",
+        "roommate_b",
+        "roommate_c",
+    ]
+    assert [roommate.preset_key for roommate in request.roommates] == [
+        "direct",
+        "avoidant",
+        "harmony",
+    ]
+    assert [roommate.avatar for roommate in request.roommates] == [
+        "nailong",
+        "capybara_lulu",
+        "baobaolong",
+    ]
+
+    with pytest.raises(ValidationError):
+        SimulateRequest(
+            scenario="噪音冲突",
+            user_message="能不能小声一点？",
+            roommates=[
+                {
+                    "id": "same",
+                    "name": "舍友 A",
+                    "personality_tag": "直接型",
+                    "tag_mode": "preset",
+                    "preset_key": "direct",
+                },
+                {
+                    "id": "same",
+                    "name": "舍友 B",
+                    "personality_tag": "回避型",
+                    "tag_mode": "preset",
+                    "preset_key": "avoidant",
+                },
+            ],
+        )
+
+
+def test_simulate_request_assigns_missing_roommate_avatars_and_rejects_duplicate_avatars():
+    request = SimulateRequest(
+        scenario="噪音冲突",
+        user_message="能不能小声一点？",
+        roommates=[
+            {
+                "id": "roommate_a",
+                "name": "舍友 A",
+                "personality_tag": "直接型",
+                "tag_mode": "preset",
+                "preset_key": "direct",
+            },
+            {
+                "id": "roommate_b",
+                "name": "舍友 B",
+                "personality_tag": "回避型",
+                "tag_mode": "preset",
+                "preset_key": "avoidant",
+                "avatar": "patrick",
+            },
+        ],
+    )
+
+    assert [roommate.avatar for roommate in request.roommates] == ["nailong", "patrick"]
+
+    with pytest.raises(ValidationError):
+        SimulateRequest(
+            scenario="噪音冲突",
+            user_message="能不能小声一点？",
+            roommates=[
+                {
+                    "id": "roommate_a",
+                    "name": "舍友 A",
+                    "personality_tag": "直接型",
+                    "tag_mode": "preset",
+                    "preset_key": "direct",
+                    "avatar": "nailong",
+                },
+                {
+                    "id": "roommate_b",
+                    "name": "舍友 B",
+                    "personality_tag": "回避型",
+                    "tag_mode": "preset",
+                    "preset_key": "avoidant",
+                    "avatar": "nailong",
+                },
+            ],
+        )
+
+
+def test_simulate_request_accepts_one_to_five_roommates_and_rejects_out_of_range_counts():
+    one_roommate = SimulateRequest(
+        scenario="噪音冲突",
+        user_message="能不能小声一点？",
+        roommates=[
+            {
+                "id": "roommate_a",
+                "name": "舍友 A",
+                "personality_tag": "直接型",
+                "tag_mode": "preset",
+                "preset_key": "direct",
+            }
+        ],
+    )
+    five_roommates = SimulateRequest(
+        scenario="噪音冲突",
+        user_message="能不能小声一点？",
+        roommates=[
+            {
+                "id": f"roommate_{index}",
+                "name": f"舍友 {index}",
+                "personality_tag": "调和型",
+                "tag_mode": "preset",
+                "preset_key": "harmony",
+            }
+            for index in range(5)
+        ],
+    )
+
+    assert len(one_roommate.roommates) == 1
+    assert len(five_roommates.roommates) == 5
+
+    with pytest.raises(ValidationError):
+        SimulateRequest(
+            scenario="噪音冲突",
+            user_message="能不能小声一点？",
+            roommates=[],
+        )
+
+    with pytest.raises(ValidationError):
+        SimulateRequest(
+            scenario="噪音冲突",
+            user_message="能不能小声一点？",
+            roommates=[
+                {
+                    "id": f"roommate_{index}",
+                    "name": f"舍友 {index}",
+                    "personality_tag": "直接型",
+                    "tag_mode": "preset",
+                    "preset_key": "direct",
+                }
+                for index in range(6)
+            ],
+        )
 
 
 def test_simulate_request_rejects_unknown_risk_level():
@@ -99,41 +456,59 @@ def test_simulate_request_rejects_blank_user_message():
         SimulateRequest(scenario="噪音冲突", user_message="   ")
 
 
-def test_simulate_response_requires_three_fixed_roommate_roles():
-    response = SimulateResponse(
+def test_simulate_response_allows_zero_to_fifteen_dynamic_replies():
+    empty_response = SimulateResponse(
+        conversation_id="conversation-1",
+        replies=[],
+        safety_note=SIMULATE_SAFETY_NOTE,
+    )
+    full_response = SimulateResponse(
+        conversation_id="conversation-1",
         replies=[
-            RoommateReply(roommate="舍友 A", personality="直接型", message="我也没开很大声吧。"),
-            RoommateReply(roommate="舍友 B", personality="回避型", message="这个之后再说吧。"),
-            RoommateReply(roommate="舍友 C", personality="调和型", message="我们可以定个休息规则。"),
+            RoommateReply(
+                roommate_id=f"roommate_{index % 5}",
+                roommate=f"舍友 {index % 5}",
+                personality="自定义",
+                message=f"第 {index} 条回复。",
+            )
+            for index in range(15)
         ],
-        safety_note="本回复仅用于宿舍沟通演练，不代表真实舍友想法，不进行心理诊断，不进行医学判断，不进行人格评价。如有现实安全风险，请联系辅导员、心理老师、家人或可信任同学。",
+        safety_note=SIMULATE_SAFETY_NOTE,
     )
 
-    assert [(reply.roommate, reply.personality) for reply in response.replies] == [
-        ("舍友 A", "直接型"),
-        ("舍友 B", "回避型"),
-        ("舍友 C", "调和型"),
-    ]
+    assert empty_response.conversation_id == "conversation-1"
+    assert empty_response.replies == []
+    assert len(full_response.replies) == 15
 
 
-def test_simulate_response_rejects_missing_fixed_role():
+def test_simulate_response_rejects_more_than_fifteen_dynamic_replies():
     with pytest.raises(ValidationError):
         SimulateResponse(
+            conversation_id="conversation-1",
             replies=[
-                RoommateReply(roommate="舍友 A", personality="直接型", message="我也没开很大声吧。"),
-                RoommateReply(roommate="舍友 C", personality="调和型", message="我们可以定个休息规则。"),
+                RoommateReply(
+                    roommate_id=f"roommate_{index}",
+                    roommate=f"舍友 {index}",
+                    personality="自定义",
+                    message="我知道了。",
+                )
+                for index in range(16)
             ],
-            safety_note="本回复仅用于宿舍沟通演练，不代表真实舍友想法，不进行心理诊断，不进行医学判断，不进行人格评价。如有现实安全风险，请联系辅导员。",
+            safety_note=SIMULATE_SAFETY_NOTE,
         )
 
 
 def test_simulate_response_rejects_unsafe_safety_note():
     with pytest.raises(ValidationError):
         SimulateResponse(
+            conversation_id="conversation-1",
             replies=[
-                RoommateReply(roommate="舍友 A", personality="直接型", message="我也没开很大声吧。"),
-                RoommateReply(roommate="舍友 B", personality="回避型", message="这个之后再说吧。"),
-                RoommateReply(roommate="舍友 C", personality="调和型", message="我们可以定个休息规则。"),
+                RoommateReply(
+                    roommate_id="roommate_a",
+                    roommate="舍友 A",
+                    personality="直接型",
+                    message="我也没开很大声吧。",
+                ),
             ],
             safety_note="祝你沟通顺利。",
         )
@@ -142,10 +517,14 @@ def test_simulate_response_rejects_unsafe_safety_note():
 def test_simulate_response_rejects_safety_note_missing_virtual_roommate_boundary():
     with pytest.raises(ValidationError):
         SimulateResponse(
+            conversation_id="conversation-1",
             replies=[
-                RoommateReply(roommate="舍友 A", personality="直接型", message="我也没开很大声吧。"),
-                RoommateReply(roommate="舍友 B", personality="回避型", message="这个之后再说吧。"),
-                RoommateReply(roommate="舍友 C", personality="调和型", message="我们可以定个休息规则。"),
+                RoommateReply(
+                    roommate_id="roommate_a",
+                    roommate="舍友 A",
+                    personality="直接型",
+                    message="我也没开很大声吧。",
+                ),
             ],
             safety_note="本回复仅用于宿舍沟通演练，不进行心理诊断，不进行医学判断，不进行人格评价。如有现实安全风险，请联系辅导员。",
         )
@@ -154,27 +533,43 @@ def test_simulate_response_rejects_safety_note_missing_virtual_roommate_boundary
 def test_simulate_response_rejects_safety_note_missing_rehearsal_purpose():
     with pytest.raises(ValidationError):
         SimulateResponse(
+            conversation_id="conversation-1",
             replies=[
-                RoommateReply(roommate="舍友 A", personality="直接型", message="我也没开很大声吧。"),
-                RoommateReply(roommate="舍友 B", personality="回避型", message="这个之后再说吧。"),
-                RoommateReply(roommate="舍友 C", personality="调和型", message="我们可以定个休息规则。"),
+                RoommateReply(
+                    roommate_id="roommate_a",
+                    roommate="舍友 A",
+                    personality="直接型",
+                    message="我也没开很大声吧。",
+                ),
             ],
             safety_note="不代表真实舍友想法，不进行心理诊断，不进行医学判断，不进行人格评价。如有现实安全风险，请联系辅导员。",
         )
 
 
-def test_review_request_requires_at_least_one_dialogue_message():
-    with pytest.raises(ValidationError):
-        ReviewRequest(scenario="噪音冲突", dialogue=[])
+def test_review_request_supports_conversation_id_without_dialogue():
+    request = ReviewRequest(scenario="噪音冲突", conversation_id="conversation-1")
+
+    assert request.conversation_id == "conversation-1"
+    assert request.dialogue == []
 
 
-def test_review_request_rejects_more_than_twenty_dialogue_messages():
+def test_review_request_rejects_more_than_fifty_dialogue_messages():
+    request = ReviewRequest(
+        scenario="噪音冲突",
+        dialogue=[
+            DialogueMessage(speaker="user", message=f"第 {index} 条消息")
+            for index in range(50)
+        ],
+    )
+
+    assert len(request.dialogue) == 50
+
     with pytest.raises(ValidationError):
         ReviewRequest(
             scenario="噪音冲突",
             dialogue=[
                 DialogueMessage(speaker="user", message=f"第 {index} 条消息")
-                for index in range(21)
+                for index in range(51)
             ],
         )
 
@@ -355,6 +750,9 @@ def test_build_archive_insight_messages_serializes_events_and_analysis():
     assert '"severity": 4' in message_content
     assert '"frequency": "weekly_multiple"' in message_content
     assert '"emotion": "anxious"' in message_content
+    assert '"primary_emotion": "anxious"' in message_content
+    assert '"emotions": ["anxious"]' in message_content
+    assert '"emotion_labels": ["焦虑"]' in message_content
     assert '"has_communicated": false' in message_content
     assert '"has_conflict": true' in message_content
     assert '"description": "舍友晚上打游戏声音很大，影响睡眠。"' in message_content
@@ -366,21 +764,88 @@ def test_build_archive_insight_messages_serializes_events_and_analysis():
     assert "disclaimer" not in message_content
 
 
+def test_build_archive_insight_messages_serializes_multi_emotion_labels():
+    event_payload = EventRecordCreate(
+        event_date=date(2026, 5, 15),
+        event_type="hygiene",
+        severity=2,
+        frequency="occasional",
+        emotion="helpless",
+        emotions=["helpless", "depressed"],
+        primary_emotion="helpless",
+        has_communicated=True,
+        has_conflict=False,
+        description="公共区域有点乱，我很无奈也有些压抑。",
+    )
+    event = EventRecord(
+        **event_payload.model_dump(),
+        id="event-1",
+        created_at=datetime(2026, 5, 15, 8, 0, 0),
+        single_analysis=AnalyzeResponse(
+            pressure_score=34,
+            risk_level="pressure",
+            risk_label="存在压力",
+            main_sources=["卫生习惯差异"],
+            emotion_keywords=["无奈", "压抑"],
+            trend_message="当前压力值为 34。",
+            suggestion="建议尽早沟通。",
+            recommend_simulation=False,
+            disclaimer="本结果不作为心理诊断依据。",
+        ),
+    )
+    analysis = ArchiveAnalysisResponse(
+        pressure_score=34,
+        risk_level="pressure",
+        risk_label="存在压力",
+        main_sources=["卫生冲突"],
+        emotion_keywords=["无奈", "压抑"],
+        trend_message="事件档案共记录 1 条事件。",
+        suggestion="建议尽早沟通。",
+        recommend_simulation=False,
+        disclaimer="本结果不作为心理诊断依据。",
+        event_count=1,
+        active_30d_count=1,
+        source_breakdown=[],
+    )
+
+    messages = build_archive_insight_messages([event], analysis)
+
+    message_content = str(messages[-1].content)
+    assert '"emotion_labels": ["无奈", "压抑"]' in message_content
+    assert "无助" not in message_content
+    assert "低落" not in message_content
+
+
 def test_review_response_requires_actionable_lists():
     response = ReviewResponse(
         summary="用户表达了睡眠受影响的事实，整体语气较温和。",
         strengths=["说明了具体影响"],
         risks=["可以进一步明确时间范围"],
         performance_scores=REVIEW_PERFORMANCE_SCORES,
+        rewrite_suggestions=REVIEW_REWRITE_SUGGESTIONS,
         rewritten_message="我最近睡眠状态不太好，晚上 11 点后能不能戴耳机或调低音量？",
         next_steps=["选择双方情绪平稳的时间沟通"],
-        safety_note="本复盘仅用于沟通训练建议，不代表真实舍友想法，不进行心理诊断，不进行医学判断，不进行人格评价。如压力持续升高，请寻求现实支持。",
+        safety_note=REVIEW_SAFETY_NOTE,
     )
 
     assert response.strengths == ["说明了具体影响"]
     assert response.performance_scores.clarity == 82
     assert response.performance_scores.empathy == 76
     assert response.performance_scores.resolution == 71
+    assert response.rewrite_suggestions[0].message_index == 0
+
+
+def test_review_response_requires_rewrite_suggestions():
+    with pytest.raises(ValidationError):
+        ReviewResponse(
+            summary="用户表达了睡眠受影响的事实，整体语气较温和。",
+            strengths=["说明了具体影响"],
+            risks=["可以进一步明确时间范围"],
+            performance_scores=REVIEW_PERFORMANCE_SCORES,
+            rewritten_message="我最近睡眠状态不太好，晚上 11 点后能不能戴耳机或调低音量？",
+            next_steps=["选择双方情绪平稳的时间沟通"],
+            safety_note=REVIEW_SAFETY_NOTE,
+        )
 
 
 def test_review_response_rejects_empty_actionable_lists():
@@ -390,9 +855,10 @@ def test_review_response_rejects_empty_actionable_lists():
             strengths=[],
             risks=["可以进一步明确时间范围"],
             performance_scores=REVIEW_PERFORMANCE_SCORES,
+            rewrite_suggestions=REVIEW_REWRITE_SUGGESTIONS,
             rewritten_message="我最近睡眠状态不太好，晚上 11 点后能不能戴耳机或调低音量？",
             next_steps=["选择双方情绪平稳的时间沟通"],
-            safety_note="本复盘仅用于沟通训练建议，不代表真实舍友想法，不进行心理诊断，不进行医学判断，不进行人格评价。如压力持续升高，请寻求现实支持。",
+            safety_note=REVIEW_SAFETY_NOTE,
         )
 
 
@@ -403,9 +869,10 @@ def test_review_response_rejects_performance_scores_outside_0_to_100():
             strengths=["说明了具体影响"],
             risks=["可以进一步明确时间范围"],
             performance_scores={"clarity": 101, "empathy": 76, "resolution": 71},
+            rewrite_suggestions=REVIEW_REWRITE_SUGGESTIONS,
             rewritten_message="我最近睡眠状态不太好，晚上 11 点后能不能戴耳机或调低音量？",
             next_steps=["选择双方情绪平稳的时间沟通"],
-            safety_note="本复盘仅用于沟通训练建议，不代表真实舍友想法，不进行心理诊断，不进行医学判断，不进行人格评价。如压力持续升高，请寻求现实支持。",
+            safety_note=REVIEW_SAFETY_NOTE,
         )
 
 
@@ -416,6 +883,7 @@ def test_review_response_rejects_unsafe_safety_note():
             strengths=["说明了具体影响"],
             risks=["可以进一步明确时间范围"],
             performance_scores=REVIEW_PERFORMANCE_SCORES,
+            rewrite_suggestions=REVIEW_REWRITE_SUGGESTIONS,
             rewritten_message="我最近睡眠状态不太好，晚上 11 点后能不能戴耳机或调低音量？",
             next_steps=["选择双方情绪平稳的时间沟通"],
             safety_note="本建议仅供参考。",
@@ -429,6 +897,7 @@ def test_review_response_rejects_safety_note_missing_virtual_roommate_boundary()
             strengths=["说明了具体影响"],
             risks=["可以进一步明确时间范围"],
             performance_scores=REVIEW_PERFORMANCE_SCORES,
+            rewrite_suggestions=REVIEW_REWRITE_SUGGESTIONS,
             rewritten_message="我最近睡眠状态不太好，晚上 11 点后能不能戴耳机或调低音量？",
             next_steps=["选择双方情绪平稳的时间沟通"],
             safety_note="本复盘仅用于沟通训练建议，不进行心理诊断，不进行医学判断，不进行人格评价。如压力持续升高，请寻求现实支持。",
@@ -442,6 +911,7 @@ def test_review_response_rejects_safety_note_missing_training_purpose():
             strengths=["说明了具体影响"],
             risks=["可以进一步明确时间范围"],
             performance_scores=REVIEW_PERFORMANCE_SCORES,
+            rewrite_suggestions=REVIEW_REWRITE_SUGGESTIONS,
             rewritten_message="我最近睡眠状态不太好，晚上 11 点后能不能戴耳机或调低音量？",
             next_steps=["选择双方情绪平稳的时间沟通"],
             safety_note="不代表真实舍友想法，不进行心理诊断，不进行医学判断，不进行人格评价。如压力持续升高，请寻求现实支持。",
@@ -502,6 +972,7 @@ def test_prompts_include_deepseek_json_output_contract():
         "next_steps",
     ):
         assert field_name in REVIEW_SYSTEM_PROMPT
+    assert "所有表达不好的用户发言" in REVIEW_SYSTEM_PROMPT
 
 
 def test_prompt_builders_return_langchain_message_objects():

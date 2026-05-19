@@ -10,7 +10,10 @@ from fastapi.responses import StreamingResponse
 from app.ai_service import (
     AIServiceConfigurationError,
     AIServiceUnavailableError,
+    ConversationMemory,
+    ConversationMemoryNotFoundError,
     DormHarmonyAIService,
+    ReviewDialogueInvalidError,
 )
 from app.archive_analysis import analyze_archive_pressure
 from app.env import load_project_env
@@ -27,6 +30,7 @@ from app.schemas import (
     ReviewResponse,
     SimulateRequest,
     SimulateResponse,
+    emotion_display_label,
 )
 from app.scoring import analyze_pressure
 
@@ -53,15 +57,55 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_SHARED_CONVERSATION_MEMORY = ConversationMemory()
+
 
 def get_ai_service() -> DormHarmonyAIService:
     """FastAPI 依赖注入入口，测试中可覆盖为 fake service。"""
-    return DormHarmonyAIService()
+    return DormHarmonyAIService(memory=_SHARED_CONVERSATION_MEMORY)
 
 
 def get_event_store() -> JsonEventStore:
     """FastAPI 依赖注入入口，测试中可覆盖事件档案存储。"""
     return JsonEventStore()
+
+
+def _build_archive_context_summary(event_store: JsonEventStore) -> str | None:
+    """为模拟路由生成受控、短文本的事件档案摘要。"""
+    events = event_store.list()
+    if not events:
+        return None
+
+    analysis = analyze_archive_pressure(events)
+    recent_event = events[0]
+    main_sources = "、".join(analysis.main_sources) or "暂无明确来源"
+    communication_status = "已沟通" if recent_event.has_communicated else "未沟通"
+    conflict_status = "有冲突" if recent_event.has_conflict else "无冲突"
+    recent_description = _truncate_archive_text(recent_event.description, max_length=120)
+    emotion_labels = "、".join(
+        emotion_display_label(emotion)
+        for emotion in (recent_event.emotions or [recent_event.emotion])
+        if emotion is not None
+    )
+    primary_emotion = emotion_display_label(recent_event.primary_emotion or recent_event.emotion)
+
+    summary = (
+        f"事件档案：总事件 {analysis.event_count} 条，近 30 天 {analysis.active_30d_count} 条；"
+        f"主要压力来源：{main_sources}；"
+        f"风险：{analysis.risk_level}/{analysis.risk_label}；"
+        f"最近事件：{recent_event.event_type}，严重程度 {recent_event.severity}，"
+        f"主要情绪 {primary_emotion}，情绪 {emotion_labels}，"
+        f"{communication_status}，{conflict_status}，"
+        f"描述：{recent_description}"
+    )
+    return _truncate_archive_text(summary, max_length=500)
+
+
+def _truncate_archive_text(text: str, max_length: int) -> str:
+    """限制档案摘要片段长度，避免超过 SimulateResponse 字段约束。"""
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 3].rstrip() + "..."
 
 
 @app.get("/health")
@@ -142,13 +186,22 @@ def archive_insight(
 def simulate(
     request: SimulateRequest,
     ai_service: DormHarmonyAIService = Depends(get_ai_service),
+    event_store: JsonEventStore = Depends(get_event_store),
 ) -> SimulateResponse:
     """调用 AI 服务生成三位虚拟舍友的结构化模拟回复。"""
     try:
-        return ai_service.simulate(request)
+        archive_context_summary = (
+            _build_archive_context_summary(event_store)
+            if request.use_event_archive
+            else None
+        )
+        return ai_service.simulate(request, archive_context_summary=archive_context_summary)
     except AIServiceConfigurationError as exc:
         # 配置缺失是本地部署问题，前端按 503 展示“需要配置 AI 服务”。
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ConversationMemoryNotFoundError as exc:
+        # 会话记忆不存在通常表示后端重启或旧 conversation_id，提示前端重新演练。
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except AIServiceUnavailableError as exc:
         # 已配置但模型调用失败或输出异常，按 502 处理为上游服务不可用。
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -163,20 +216,31 @@ def _encode_ndjson_event(event: dict[str, object]) -> str:
 def simulate_stream(
     request: SimulateRequest,
     ai_service: DormHarmonyAIService = Depends(get_ai_service),
+    event_store: JsonEventStore = Depends(get_event_store),
 ) -> StreamingResponse:
     """以 start、reply、final 顺序流式返回沟通模拟结果。"""
     try:
-        result = ai_service.simulate(request)
+        archive_context_summary = (
+            _build_archive_context_summary(event_store)
+            if request.use_event_archive
+            else None
+        )
+        result = ai_service.simulate(request, archive_context_summary=archive_context_summary)
     except AIServiceConfigurationError as exc:
         # 配置缺失仍作为普通 HTTP 错误返回，避免前端收到半截流。
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ConversationMemoryNotFoundError as exc:
+        # 会话记忆不存在时不进入流体，前端可按普通 400 处理。
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except AIServiceUnavailableError as exc:
         # 模型调用失败或结构异常不进入流体，方便前端沿用原兜底逻辑。
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     def event_stream():
         """生成沟通模拟的 NDJSON 事件序列。"""
-        yield _encode_ndjson_event({"type": "start"})
+        yield _encode_ndjson_event(
+            {"type": "start", "conversation_id": result.conversation_id}
+        )
         for reply in result.replies:
             yield _encode_ndjson_event(
                 {"type": "reply", "reply": reply.model_dump(mode="json")}
@@ -199,6 +263,12 @@ def review(
     except AIServiceConfigurationError as exc:
         # 配置缺失是本地部署问题，前端按 503 展示“需要配置 AI 服务”。
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ConversationMemoryNotFoundError as exc:
+        # 会话记忆不存在通常表示后端重启或旧 conversation_id，提示前端重新演练。
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ReviewDialogueInvalidError as exc:
+        # 对话缓存为空或缺少用户发言属于客户端可恢复状态，不应伪装成 AI 上游 502。
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except AIServiceUnavailableError as exc:
         # 已配置但模型调用失败或输出异常，按 502 处理为上游服务不可用。
         raise HTTPException(status_code=502, detail=str(exc)) from exc

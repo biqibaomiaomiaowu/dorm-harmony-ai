@@ -5,9 +5,11 @@ from datetime import date
 from fastapi.testclient import TestClient
 import pytest
 
+import app.ai_service as ai_service
 from app.ai_service import (
     AIServiceConfigurationError,
     AIServiceUnavailableError,
+    ConversationMemoryNotFoundError,
     DormHarmonyAIService,
 )
 from app.event_store import InMemoryEventStore
@@ -26,28 +28,43 @@ from app.schemas import ArchiveInsightResponse, ReviewResponse, RoommateReply, S
 
 client = TestClient(app)
 REVIEW_PERFORMANCE_SCORES = {"clarity": 82, "empathy": 76, "resolution": 71}
+REVIEW_REWRITE_SUGGESTIONS = [
+    {
+        "message_index": 0,
+        "original_message": "能不能晚上小声一点？",
+        "issue": "请求还可以更具体。",
+        "suggested_message": "我最近 11 点后比较需要休息，可以麻烦你那之后降低音量吗？",
+        "reason": "把影响、时间和行动请求说清楚。",
+    }
+]
 
 
 class FakeAIService:
-    def simulate(self, request):
+    def simulate(self, request, archive_context_summary=None):
         return SimulateResponse(
+            conversation_id=request.conversation_id or "conversation-1",
             replies=[
                 RoommateReply(
+                    roommate_id="roommate_a",
                     roommate="舍友 A",
                     personality="直接型",
                     message="我知道你觉得吵，我会注意音量。",
                 ),
                 RoommateReply(
+                    roommate_id="roommate_b",
                     roommate="舍友 B",
                     personality="回避型",
                     message="我可能没意识到已经影响你了，可以再提醒我。",
                 ),
                 RoommateReply(
+                    roommate_id="roommate_c",
                     roommate="舍友 C",
                     personality="调和型",
                     message="我们可以一起约定 11 点后的安静时间。",
                 ),
             ],
+            archive_context_used=archive_context_summary is not None,
+            archive_context_summary=archive_context_summary,
             safety_note=(
                 "仅用于宿舍沟通演练，不代表真实舍友想法，不进行心理诊断，"
                 "不进行医学判断，不进行人格评价；如冲突升级请寻求辅导员或心理老师等现实支持。"
@@ -60,6 +77,7 @@ class FakeAIService:
             strengths=["说明了具体时间和影响", "语气保持克制"],
             risks=["可能让对方觉得被指责"],
             performance_scores=REVIEW_PERFORMANCE_SCORES,
+            rewrite_suggestions=REVIEW_REWRITE_SUGGESTIONS,
             rewritten_message="我最近 11 点后比较需要休息，可以麻烦你那之后降低音量吗？",
             next_steps=["先约定安静时段", "必要时请辅导员协助沟通"],
             safety_note=(
@@ -81,7 +99,7 @@ class FakeAIService:
 
 
 class MissingKeyService:
-    def simulate(self, request):
+    def simulate(self, request, archive_context_summary=None):
         raise AIServiceConfigurationError(
             "AI 服务未配置：请设置 DEEPSEEK_API_KEY（推荐）或 OPENAI_API_KEY（兼容旧配置）。"
         )
@@ -98,7 +116,7 @@ class MissingKeyService:
 
 
 class BrokenAIService:
-    def simulate(self, request):
+    def simulate(self, request, archive_context_summary=None):
         raise AIServiceUnavailableError("AI 服务暂时不可用，请稍后重试。")
 
     def review(self, request):
@@ -106,6 +124,28 @@ class BrokenAIService:
 
     def archive_insight(self, events, analysis):
         raise AIServiceUnavailableError("AI 服务暂时不可用，请稍后重试。")
+
+
+class MissingMemoryService:
+    def simulate(self, request, archive_context_summary=None):
+        raise ConversationMemoryNotFoundError("未找到对应的模拟对话，请回到模拟页重新演练。")
+
+    def review(self, request):
+        raise ConversationMemoryNotFoundError("未找到对应的模拟对话，请回到模拟页重新演练。")
+
+    def archive_insight(self, events, analysis):
+        raise AssertionError("archive_insight should not be called")
+
+
+class CapturingSimulateService(FakeAIService):
+    def __init__(self):
+        self.simulate_request = None
+        self.archive_context_summary = None
+
+    def simulate(self, request, archive_context_summary=None):
+        self.simulate_request = request
+        self.archive_context_summary = archive_context_summary
+        return super().simulate(request, archive_context_summary=archive_context_summary)
 
 
 class CapturingArchiveInsightService(FakeAIService):
@@ -140,6 +180,38 @@ class CapturingReviewService(FakeAIService):
     def review(self, request):
         self.review_request = request
         return super().review(request)
+
+
+class RouteMemoryRunner:
+    plan_histories = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def plan_simulation_replies(self, request, history, archive_context_summary=None):
+        self.__class__.plan_histories.append(list(history))
+        return ai_service.SpeakerPlanResponse(replies=[{"roommate_id": "roommate_a"}])
+
+    def generate_roommate_reply(
+        self,
+        request,
+        history,
+        archive_context_summary,
+        same_turn_replies,
+        roommate,
+    ):
+        return RoommateReply(
+            roommate_id="roommate_a",
+            roommate="舍友 A",
+            personality="直接型",
+            message="我会注意音量。",
+        )
+
+    def generate_review(self, request, dialogue):
+        return FakeAIService().review(request)
+
+    def generate_archive_insight(self, events, analysis):
+        return FakeAIService().archive_insight(events, analysis)
 
 
 def assert_llm_key_hint(detail):
@@ -215,6 +287,28 @@ def test_analyze_endpoint_returns_structured_pressure_analysis():
     assert "当前压力值为 76" in body["trend_message"]
     assert "沟通演练" in body["suggestion"]
     assert body["disclaimer"] == SAFETY_DISCLAIMER
+
+
+def test_analyze_endpoint_accepts_multiple_emotions():
+    response = client.post(
+        "/api/analyze",
+        json={
+            "event_type": "noise",
+            "severity": 4,
+            "frequency": "weekly_multiple",
+            "emotion": "helpless",
+            "emotions": ["helpless", "angry", "helpless"],
+            "primary_emotion": "helpless",
+            "has_communicated": False,
+            "has_conflict": True,
+            "description": "舍友晚上打游戏声音很大，我很无奈也有点生气。",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["emotion_keywords"] == ["无奈", "愤怒"]
+    assert body["pressure_score"] > 70
 
 
 def test_create_event_record_returns_saved_event_and_single_analysis():
@@ -553,6 +647,103 @@ def test_simulate_endpoint_returns_structured_roommate_replies():
     assert "不进行心理诊断" in body["safety_note"]
 
 
+def test_simulate_endpoint_passes_archive_context_summary_when_requested():
+    event_store = InMemoryEventStore()
+    service = CapturingSimulateService()
+    app.dependency_overrides[get_event_store] = lambda: event_store
+    app.dependency_overrides[get_ai_service] = lambda: service
+
+    create_response = create_noise_event_for_archive()
+    response = client.post(
+        "/api/simulate",
+        json={
+            "scenario": "舍友晚上打游戏声音很大，影响睡眠。",
+            "user_message": "能不能晚上小声一点？",
+            "risk_level": "high",
+            "use_event_archive": True,
+        },
+    )
+
+    assert create_response.status_code == 200
+    assert response.status_code == 200
+    summary = service.archive_context_summary
+    assert summary is not None
+    assert len(summary) <= 500
+    for expected_text in [
+        "事件档案：总事件 1 条",
+        "近 30 天 1 条",
+        "主要压力来源：噪音冲突",
+        "风险：high/冲突风险较高",
+        "最近事件：noise",
+        "严重程度 4",
+        "主要情绪 焦虑",
+        "情绪 焦虑",
+        "未沟通",
+        "有冲突",
+        "舍友晚上打游戏声音很大",
+    ]:
+        assert expected_text in summary
+    body = response.json()
+    assert body["archive_context_used"] is True
+    assert body["archive_context_summary"] == summary
+
+
+def test_simulate_endpoint_uses_no_archive_context_when_requested_archive_is_empty():
+    event_store = InMemoryEventStore()
+    service = CapturingSimulateService()
+    app.dependency_overrides[get_event_store] = lambda: event_store
+    app.dependency_overrides[get_ai_service] = lambda: service
+
+    response = client.post(
+        "/api/simulate",
+        json={
+            "scenario": "舍友晚上打游戏声音很大，影响睡眠。",
+            "user_message": "能不能晚上小声一点？",
+            "risk_level": "high",
+            "use_event_archive": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert service.archive_context_summary is None
+    body = response.json()
+    assert body["archive_context_used"] is False
+    assert body["archive_context_summary"] is None
+
+
+def test_default_ai_service_preserves_memory_across_api_requests(monkeypatch):
+    RouteMemoryRunner.plan_histories = []
+    monkeypatch.setattr(ai_service, "LangChainDeepSeekRunner", RouteMemoryRunner)
+
+    first_response = client.post(
+        "/api/simulate",
+        json={
+            "scenario": "舍友晚上打游戏声音很大，影响睡眠。",
+            "user_message": "第一轮请你小声一点。",
+            "risk_level": "high",
+        },
+    )
+    conversation_id = first_response.json()["conversation_id"]
+    second_response = client.post(
+        "/api/simulate",
+        json={
+            "conversation_id": conversation_id,
+            "scenario": "舍友晚上打游戏声音很大，影响睡眠。",
+            "user_message": "那我们 11 点后戴耳机可以吗？",
+            "risk_level": "high",
+        },
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert second_response.json()["conversation_id"] == conversation_id
+    assert any(
+        message.message == "第一轮请你小声一点。"
+        for history in RouteMemoryRunner.plan_histories
+        for message in history
+    )
+
+
 def test_simulate_stream_endpoint_returns_ordered_reply_events():
     app.dependency_overrides[get_ai_service] = lambda: FakeAIService()
 
@@ -586,6 +777,73 @@ def test_simulate_stream_endpoint_returns_ordered_reply_events():
     assert "不进行心理诊断" in events[-1]["response"]["safety_note"]
 
 
+def test_simulate_stream_endpoint_includes_conversation_id_and_archive_context_in_final():
+    event_store = InMemoryEventStore()
+    service = CapturingSimulateService()
+    app.dependency_overrides[get_event_store] = lambda: event_store
+    app.dependency_overrides[get_ai_service] = lambda: service
+
+    create_response = create_noise_event_for_archive()
+    with client.stream(
+        "POST",
+        "/api/simulate/stream",
+        json={
+            "scenario": "舍友晚上打游戏声音很大，影响睡眠。",
+            "user_message": "能不能晚上小声一点？",
+            "risk_level": "high",
+            "use_event_archive": True,
+        },
+    ) as response:
+        lines = [line for line in response.iter_lines() if line]
+
+    assert create_response.status_code == 200
+    assert response.status_code == 200
+    events = [json.loads(line) for line in lines]
+    assert events[0] == {"type": "start", "conversation_id": "conversation-1"}
+    assert events[-1]["type"] == "final"
+    assert events[-1]["response"]["conversation_id"] == "conversation-1"
+    assert events[-1]["response"]["archive_context_used"] is True
+    assert events[-1]["response"]["archive_context_summary"] == service.archive_context_summary
+
+
+def test_simulate_endpoint_archive_context_summary_uses_emotion_labels():
+    event_store = InMemoryEventStore()
+    service = CapturingSimulateService()
+    app.dependency_overrides[get_event_store] = lambda: event_store
+    app.dependency_overrides[get_ai_service] = lambda: service
+
+    create_response = client.post(
+        "/api/events",
+        json={
+            "event_date": date.today().isoformat(),
+            "event_type": "hygiene",
+            "severity": 2,
+            "frequency": "occasional",
+            "emotion": "helpless",
+            "emotions": ["helpless", "depressed"],
+            "primary_emotion": "helpless",
+            "has_communicated": True,
+            "has_conflict": False,
+            "description": "公共区域有点乱，我很无奈也有些压抑。",
+        },
+    )
+    response = client.post(
+        "/api/simulate",
+        json={
+            "scenario": "公共卫生沟通",
+            "user_message": "我们能不能重新分一下公共区域打扫？",
+            "use_event_archive": True,
+        },
+    )
+
+    assert create_response.status_code == 200
+    assert response.status_code == 200
+    assert service.archive_context_summary is not None
+    assert "情绪 无奈、压抑" in service.archive_context_summary
+    assert "无助" not in service.archive_context_summary
+    assert "低落" not in service.archive_context_summary
+
+
 def test_review_endpoint_returns_structured_report():
     app.dependency_overrides[get_ai_service] = lambda: FakeAIService()
 
@@ -605,6 +863,7 @@ def test_review_endpoint_returns_structured_report():
     assert body["strengths"]
     assert body["risks"]
     assert body["performance_scores"] == REVIEW_PERFORMANCE_SCORES
+    assert body["rewrite_suggestions"]
     assert "11 点后" in body["rewritten_message"]
     assert "不进行心理诊断" in body["safety_note"]
 
@@ -921,6 +1180,22 @@ def test_simulate_endpoint_returns_502_when_ai_service_fails():
     assert "AI 服务暂时不可用" in response.json()["detail"]
 
 
+def test_simulate_endpoint_returns_400_when_conversation_memory_is_missing():
+    app.dependency_overrides[get_ai_service] = lambda: MissingMemoryService()
+
+    response = client.post(
+        "/api/simulate",
+        json={
+            "conversation_id": "missing-conversation",
+            "scenario": "舍友晚上打游戏声音很大，影响睡眠。",
+            "user_message": "能不能晚上小声一点？",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "回到模拟页重新演练" in response.json()["detail"]
+
+
 def test_simulate_stream_endpoint_returns_503_when_ai_key_missing():
     app.dependency_overrides[get_ai_service] = lambda: MissingKeyService()
 
@@ -951,6 +1226,22 @@ def test_simulate_stream_endpoint_returns_502_when_ai_service_fails():
     assert "AI 服务暂时不可用" in response.json()["detail"]
 
 
+def test_simulate_stream_endpoint_returns_400_when_conversation_memory_is_missing():
+    app.dependency_overrides[get_ai_service] = lambda: MissingMemoryService()
+
+    response = client.post(
+        "/api/simulate/stream",
+        json={
+            "conversation_id": "missing-conversation",
+            "scenario": "舍友晚上打游戏声音很大，影响睡眠。",
+            "user_message": "能不能晚上小声一点？",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "回到模拟页重新演练" in response.json()["detail"]
+
+
 def test_review_endpoint_returns_502_when_ai_service_fails():
     app.dependency_overrides[get_ai_service] = lambda: BrokenAIService()
 
@@ -966,6 +1257,21 @@ def test_review_endpoint_returns_502_when_ai_service_fails():
 
     assert response.status_code == 502
     assert "AI 服务暂时不可用" in response.json()["detail"]
+
+
+def test_review_endpoint_returns_400_when_conversation_memory_is_missing():
+    app.dependency_overrides[get_ai_service] = lambda: MissingMemoryService()
+
+    response = client.post(
+        "/api/review",
+        json={
+            "conversation_id": "missing-conversation",
+            "scenario": "舍友晚上打游戏声音很大，影响睡眠。",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "回到模拟页重新演练" in response.json()["detail"]
 
 
 def test_simulate_endpoint_rejects_blank_message():

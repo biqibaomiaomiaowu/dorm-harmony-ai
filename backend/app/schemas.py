@@ -37,13 +37,35 @@ class Emotion(StrEnum):
     DEPRESSED = "depressed"
 
 
+EMOTION_DISPLAY_LABELS: dict[Emotion, str] = {
+    Emotion.IRRITABLE: "烦躁",
+    Emotion.ANXIOUS: "焦虑",
+    Emotion.WRONGED: "委屈",
+    Emotion.ANGRY: "愤怒",
+    Emotion.HELPLESS: "无奈",
+    Emotion.DEPRESSED: "压抑",
+}
+
+
+def emotion_display_label(value: Emotion | str) -> str:
+    """把情绪枚举转成前端一致的中文标签。"""
+    try:
+        emotion = value if isinstance(value, Emotion) else Emotion(value)
+    except ValueError:
+        return str(value)
+
+    return EMOTION_DISPLAY_LABELS[emotion]
+
+
 class AnalyzeRequest(BaseModel):
     """单条宿舍事件压力分析接口的请求体。"""
 
     event_type: EventType
     severity: int = Field(ge=1, le=5)
     frequency: EventFrequency
-    emotion: Emotion
+    emotion: Emotion | None = None
+    emotions: list[Emotion] = Field(default_factory=list, max_length=6)
+    primary_emotion: Emotion | None = None
     has_communicated: bool
     has_conflict: bool
     description: str = Field(max_length=500)
@@ -60,6 +82,38 @@ class AnalyzeRequest(BaseModel):
             raise ValueError("description must not be empty")
 
         return description
+
+    @model_validator(mode="after")
+    def normalize_emotion_selection(self) -> "AnalyzeRequest":
+        """兼容旧 emotion 字段，同时支持多选和主情绪。"""
+        if (
+            self.emotion is not None
+            and self.primary_emotion is not None
+            and self.emotion != self.primary_emotion
+        ):
+            raise ValueError("emotion and primary_emotion must match")
+
+        has_explicit_emotions = bool(self.emotions)
+        selected: list[Emotion] = []
+        for emotion in self.emotions:
+            if emotion not in selected:
+                selected.append(emotion)
+
+        primary = self.primary_emotion or self.emotion
+        if primary is None:
+            if not selected:
+                raise ValueError("at least one emotion is required")
+            primary = selected[0]
+
+        if primary not in selected:
+            if has_explicit_emotions:
+                raise ValueError("primary_emotion must be included in emotions")
+            selected.append(primary)
+
+        self.primary_emotion = primary
+        self.emotion = primary
+        self.emotions = selected
+        return self
 
 
 AnalyzeRiskLevel = Literal["stable", "pressure", "high", "severe"]
@@ -168,9 +222,19 @@ class ArchiveInsightResponse(BaseModel):
         return _validate_safety_note_boundaries(value)
 
 
+RoommatePresetKey = Literal["direct", "avoidant", "harmony"]
+RoommateTagMode = Literal["preset", "custom"]
+RoommateAvatarKey = Literal["nailong", "capybara_lulu", "baobaolong", "patrick", "spongebob"]
+ROOMMATE_AVATAR_KEYS: tuple[RoommateAvatarKey, ...] = (
+    "nailong",
+    "capybara_lulu",
+    "baobaolong",
+    "patrick",
+    "spongebob",
+)
 RoommateName = Literal["舍友 A", "舍友 B", "舍友 C"]
 RoommatePersonality = Literal["直接型", "回避型", "调和型"]
-DialogueSpeaker = Literal["user", "roommate_a", "roommate_b", "roommate_c", "system"]
+DialogueSpeaker = str
 
 # 兼容前端展示文案，进入 AI 服务前统一收敛为后端稳定枚举。
 FRONTEND_DIALOGUE_SPEAKER_ALIASES = {
@@ -259,12 +323,18 @@ class DialogueMessage(BaseModel):
     @field_validator("speaker", mode="before")
     @classmethod
     def normalize_frontend_speaker_alias(cls, value: str) -> str:
-        """把前端展示用 speaker 文案归一为后端稳定枚举值。"""
+        """把前端展示用 speaker 文案归一为后端稳定 speaker id。"""
         if not isinstance(value, str):
             raise ValueError("speaker must be a string")
 
-        speaker = value.strip()
-        return FRONTEND_DIALOGUE_SPEAKER_ALIASES.get(speaker, speaker)
+        raw_speaker = value.strip()
+        speaker = FRONTEND_DIALOGUE_SPEAKER_ALIASES.get(raw_speaker, raw_speaker)
+        if speaker in {"user", "system"}:
+            return speaker
+        if speaker.startswith("roommate_") and len(speaker) > len("roommate_"):
+            return speaker
+
+        raise ValueError("speaker must be user, system, or a roommate_* id")
 
     @field_validator("message", mode="before")
     @classmethod
@@ -280,19 +350,69 @@ class DialogueMessage(BaseModel):
         return message
 
 
-class SimulateRequest(BaseModel):
-    """AI 沟通模拟接口的请求体。"""
+class RoommateTraits(BaseModel):
+    """虚拟舍友的 0-5 数值属性。"""
 
-    scenario: str = Field(max_length=300)
-    user_message: str = Field(max_length=500)
-    risk_level: AnalyzeRiskLevel | None = None
-    context: str | None = Field(default=None, max_length=500)
-    dialogue: list[DialogueMessage] = Field(default_factory=list, max_length=20)
+    model_config = ConfigDict(extra="forbid")
 
-    @field_validator("scenario", "user_message", mode="before")
+    directness: int = Field(ge=0, le=5)
+    emotional_reactivity: int = Field(ge=0, le=5)
+    avoidance: int = Field(ge=0, le=5)
+    empathy: int = Field(ge=0, le=5)
+    solution_willingness: int = Field(ge=0, le=5)
+    boundary_sensitivity: int = Field(ge=0, le=5)
+
+
+PRESET_ROOMMATE_TRAIT_VALUES: dict[RoommatePresetKey, dict[str, int]] = {
+    "direct": {
+        "directness": 5,
+        "emotional_reactivity": 3,
+        "avoidance": 1,
+        "empathy": 2,
+        "solution_willingness": 3,
+        "boundary_sensitivity": 4,
+    },
+    "avoidant": {
+        "directness": 1,
+        "emotional_reactivity": 2,
+        "avoidance": 5,
+        "empathy": 2,
+        "solution_willingness": 1,
+        "boundary_sensitivity": 3,
+    },
+    "harmony": {
+        "directness": 3,
+        "emotional_reactivity": 1,
+        "avoidance": 1,
+        "empathy": 5,
+        "solution_willingness": 5,
+        "boundary_sensitivity": 3,
+    },
+}
+
+
+def _preset_traits_for(preset_key: RoommatePresetKey) -> RoommateTraits:
+    """按预设标签返回一份独立的默认属性对象。"""
+    return RoommateTraits(**PRESET_ROOMMATE_TRAIT_VALUES[preset_key])
+
+
+class RoommateProfile(BaseModel):
+    """用户可配置的虚拟舍友画像。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=20)
+    personality_tag: str = Field(min_length=1, max_length=20)
+    tag_mode: RoommateTagMode
+    preset_key: RoommatePresetKey | None = None
+    traits: RoommateTraits | None = None
+    avatar: RoommateAvatarKey | None = None
+
+    @field_validator("id", "name", "personality_tag", mode="before")
     @classmethod
     def trim_and_require_text(cls, value: str) -> str:
-        """清理必填文本字段首尾空白，并拒绝空字符串。"""
+        """清理舍友画像文本字段，并拒绝空字符串。"""
         if not isinstance(value, str):
             raise ValueError("field must be a string")
 
@@ -301,6 +421,130 @@ class SimulateRequest(BaseModel):
             raise ValueError("field must not be empty")
 
         return text
+
+    @field_validator("id", mode="after")
+    @classmethod
+    def require_roommate_id_prefix(cls, value: str) -> str:
+        """舍友 id 同时作为 dialogue speaker，必须使用 roommate_* 命名空间。"""
+        if not value.startswith("roommate_") or len(value) <= len("roommate_"):
+            raise ValueError("roommate id must start with roommate_")
+
+        return value
+
+    @model_validator(mode="after")
+    def validate_tag_mode_and_traits(self) -> "RoommateProfile":
+        """预设标签自动展开属性，自定义标签必须提供完整属性。"""
+        if self.tag_mode == "preset":
+            if self.preset_key is None:
+                raise ValueError("preset_key is required for preset roommates")
+            self.traits = _preset_traits_for(self.preset_key)
+            return self
+
+        if self.preset_key is not None:
+            raise ValueError("preset_key must be empty for custom roommates")
+        if self.traits is None:
+            raise ValueError("traits are required for custom roommates")
+
+        return self
+
+
+def default_roommate_profiles() -> list[RoommateProfile]:
+    """返回当前默认三位虚拟舍友画像。"""
+    return [
+        RoommateProfile(
+            id="roommate_a",
+            name="舍友 A",
+            personality_tag="直接型",
+            tag_mode="preset",
+            preset_key="direct",
+            avatar="nailong",
+        ),
+        RoommateProfile(
+            id="roommate_b",
+            name="舍友 B",
+            personality_tag="回避型",
+            tag_mode="preset",
+            preset_key="avoidant",
+            avatar="capybara_lulu",
+        ),
+        RoommateProfile(
+            id="roommate_c",
+            name="舍友 C",
+            personality_tag="调和型",
+            tag_mode="preset",
+            preset_key="harmony",
+            avatar="baobaolong",
+        ),
+    ]
+
+
+class SimulateRequest(BaseModel):
+    """AI 沟通模拟接口的请求体。"""
+
+    conversation_id: str | None = Field(default=None, max_length=100)
+    turn_id: str | None = Field(default=None, max_length=100)
+    scenario: str = Field(max_length=300)
+    user_message: str | None = Field(default=None, max_length=500)
+    risk_level: AnalyzeRiskLevel | None = None
+    context: str | None = Field(default=None, max_length=500)
+    dialogue: list[DialogueMessage] = Field(default_factory=list, max_length=20)
+    roommates: list[RoommateProfile] = Field(
+        default_factory=default_roommate_profiles,
+        min_length=1,
+        max_length=5,
+    )
+    use_event_archive: bool = False
+    is_continuation: bool = False
+    max_replies: int | None = Field(default=None, ge=0, le=15)
+
+    @field_validator("scenario", mode="before")
+    @classmethod
+    def trim_and_require_text(cls, value: str) -> str:
+        """清理必填场景文本字段首尾空白，并拒绝空字符串。"""
+        if not isinstance(value, str):
+            raise ValueError("field must be a string")
+
+        text = value.strip()
+        if not text:
+            raise ValueError("field must not be empty")
+
+        return text
+
+    @field_validator("user_message", mode="before")
+    @classmethod
+    def trim_optional_user_message(cls, value: str | None) -> str | None:
+        """清理用户消息；continuation 请求允许为空。"""
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("user_message must be a string")
+
+        user_message = value.strip()
+        return user_message or None
+
+    @field_validator("conversation_id", mode="before")
+    @classmethod
+    def trim_optional_conversation_id(cls, value: str | None) -> str | None:
+        """清理可选会话 id，空白内容统一归一为 None。"""
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("conversation_id must be a string")
+
+        conversation_id = value.strip()
+        return conversation_id or None
+
+    @field_validator("turn_id", mode="before")
+    @classmethod
+    def trim_optional_turn_id(cls, value: str | None) -> str | None:
+        """清理可选用户回合 id，空白内容统一归一为 None。"""
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("turn_id must be a string")
+
+        turn_id = value.strip()
+        return turn_id or None
 
     @field_validator("risk_level", mode="before")
     @classmethod
@@ -326,54 +570,99 @@ class SimulateRequest(BaseModel):
         context = value.strip()
         return context or None
 
+    @model_validator(mode="after")
+    def validate_roommates_and_turn_shape(self) -> "SimulateRequest":
+        """校验舍友唯一性，并区分新用户回合和 continuation 请求。"""
+        roommate_ids = [roommate.id for roommate in self.roommates]
+        if len(roommate_ids) != len(set(roommate_ids)):
+            raise ValueError("roommate ids must be unique")
+        used_avatars = {
+            roommate.avatar for roommate in self.roommates if roommate.avatar is not None
+        }
+        explicit_avatar_count = sum(roommate.avatar is not None for roommate in self.roommates)
+        if len(used_avatars) != explicit_avatar_count:
+            raise ValueError("roommate avatars must be unique")
+
+        available_avatars = [
+            avatar for avatar in ROOMMATE_AVATAR_KEYS if avatar not in used_avatars
+        ]
+        for roommate in self.roommates:
+            if roommate.avatar is None:
+                if not available_avatars:
+                    raise ValueError("roommate avatars must be unique")
+                roommate.avatar = available_avatars.pop(0)
+
+        if self.is_continuation:
+            if not self.conversation_id:
+                raise ValueError("conversation_id is required for continuation")
+            return self
+        if not self.user_message:
+            raise ValueError("user_message is required for a new user turn")
+
+        return self
+
 
 class RoommateReply(BaseModel):
     """AI 模拟中单个虚拟舍友的结构化回复。"""
 
-    roommate: RoommateName
-    personality: RoommatePersonality
+    roommate_id: str = Field(min_length=1, max_length=64)
+    roommate: str = Field(min_length=1, max_length=20)
+    personality: str = Field(min_length=1, max_length=20)
     message: str = Field(max_length=500)
 
-    @field_validator("message", mode="before")
+    @field_validator("roommate_id", "roommate", "personality", "message", mode="before")
     @classmethod
-    def trim_and_require_message(cls, value: str) -> str:
-        """清理虚拟舍友回复内容，并拒绝空回复。"""
+    def trim_and_require_text(cls, value: str) -> str:
+        """清理虚拟舍友回复文本字段，并拒绝空字符串。"""
         if not isinstance(value, str):
-            raise ValueError("message must be a string")
+            raise ValueError("field must be a string")
 
-        message = value.strip()
-        if not message:
-            raise ValueError("message must not be empty")
+        text = value.strip()
+        if not text:
+            raise ValueError("field must not be empty")
 
-        return message
+        return text
 
 
 class SimulateResponse(BaseModel):
     """AI 沟通模拟接口的结构化响应。"""
 
-    replies: list[RoommateReply]
+    conversation_id: str = Field(min_length=1, max_length=100)
+    replies: list[RoommateReply] = Field(max_length=15)
+    archive_context_used: bool = False
+    archive_context_summary: str | None = Field(default=None, max_length=500)
     safety_note: str
+
+    @field_validator("conversation_id", mode="before")
+    @classmethod
+    def trim_and_require_conversation_id(cls, value: str) -> str:
+        """清理响应会话 id，并拒绝空字符串。"""
+        if not isinstance(value, str):
+            raise ValueError("conversation_id must be a string")
+
+        conversation_id = value.strip()
+        if not conversation_id:
+            raise ValueError("conversation_id must not be empty")
+
+        return conversation_id
+
+    @field_validator("archive_context_summary", mode="before")
+    @classmethod
+    def trim_optional_archive_context_summary(cls, value: str | None) -> str | None:
+        """清理可选事件档案摘要，空白内容统一归一为 None。"""
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("archive_context_summary must be a string")
+
+        summary = value.strip()
+        return summary or None
 
     @field_validator("safety_note", mode="before")
     @classmethod
     def validate_safety_note(cls, value: str) -> str:
         """校验模拟结果保留非诊断和虚拟舍友边界。"""
         return _validate_safety_note_boundaries(value)
-
-    @model_validator(mode="after")
-    def require_fixed_roommate_roles(self) -> "SimulateResponse":
-        """保证三位虚拟舍友的角色顺序稳定，方便前端固定展示。"""
-        expected_roles = [
-            ("舍友 A", "直接型"),
-            ("舍友 B", "回避型"),
-            ("舍友 C", "调和型"),
-        ]
-        actual_roles = [(reply.roommate, reply.personality) for reply in self.replies]
-
-        if actual_roles != expected_roles:
-            raise ValueError("replies must contain fixed roommate roles in order")
-
-        return self
 
 
 class ReviewOriginalEvent(BaseModel):
@@ -385,6 +674,8 @@ class ReviewOriginalEvent(BaseModel):
     severity: int | None = Field(default=None, ge=1, le=5)
     frequency: EventFrequency | None = None
     emotion: Emotion | None = None
+    emotions: list[Emotion] = Field(default_factory=list, max_length=6)
+    primary_emotion: Emotion | None = None
     has_communicated: bool | None = None
     has_conflict: bool | None = None
     pressure_score: int | None = Field(default=None, ge=0, le=100)
@@ -425,9 +716,22 @@ class ReviewRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    conversation_id: str | None = Field(default=None, max_length=100)
     scenario: str = Field(max_length=300)
-    dialogue: list[DialogueMessage] = Field(min_length=1, max_length=20)
+    dialogue: list[DialogueMessage] = Field(default_factory=list, max_length=50)
     original_event: ReviewOriginalEvent | None = None
+
+    @field_validator("conversation_id", mode="before")
+    @classmethod
+    def trim_optional_conversation_id(cls, value: str | None) -> str | None:
+        """清理可选会话 id，空白内容统一归一为 None。"""
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("conversation_id must be a string")
+
+        conversation_id = value.strip()
+        return conversation_id or None
 
     @field_validator("scenario", mode="before")
     @classmethod
@@ -441,6 +745,31 @@ class ReviewRequest(BaseModel):
             raise ValueError("scenario must not be empty")
 
         return scenario
+
+
+class ReviewRewriteSuggestion(BaseModel):
+    """复盘中一条可改写的用户话术建议。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_index: int = Field(ge=0)
+    original_message: str = Field(max_length=500)
+    issue: str = Field(max_length=300)
+    suggested_message: str = Field(max_length=500)
+    reason: str = Field(max_length=300)
+
+    @field_validator("original_message", "issue", "suggested_message", "reason", mode="before")
+    @classmethod
+    def trim_and_require_text(cls, value: str) -> str:
+        """清理话术建议文本字段，并拒绝空字符串。"""
+        if not isinstance(value, str):
+            raise ValueError("field must be a string")
+
+        text = value.strip()
+        if not text:
+            raise ValueError("field must not be empty")
+
+        return text
 
 
 class ReviewPerformanceScores(BaseModel):
@@ -460,6 +789,7 @@ class ReviewResponse(BaseModel):
     strengths: list[str] = Field(min_length=1)
     risks: list[str] = Field(min_length=1)
     performance_scores: ReviewPerformanceScores
+    rewrite_suggestions: list[ReviewRewriteSuggestion] = Field(min_length=1)
     rewritten_message: str
     next_steps: list[str] = Field(min_length=1)
     safety_note: str
