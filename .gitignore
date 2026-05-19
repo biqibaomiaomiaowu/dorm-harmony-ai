@@ -26,3 +26,6 @@ screenshots/
 # Local promo poster generation artifacts
 poster-output/
 poster-work/
+
+# Local demo notes
+frontend/docs/demo/3min-demo-script.md
