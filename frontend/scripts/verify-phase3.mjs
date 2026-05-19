@@ -185,8 +185,8 @@ requireRegex(
 )
 requireRegex(
   'src/views/HomeView.vue',
-  /if \(action === '查看报告'\)[\s\S]*return 'review'/,
-  'Home action "查看报告" maps to review',
+  /if \(action === '查看报告'\)[\s\S]*return 'analysis'/,
+  'Home action "查看报告" maps to analysis',
 )
 
 requireRegex(
