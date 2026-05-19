@@ -8,17 +8,17 @@ import {
   REVIEW_RESULT_STORAGE_KEY,
   SIMULATION_RESULT_STORAGE_KEY,
   buildDemoReviewResponse,
-  mapEventTypeToAnalyzeApi,
-  mapRoommateToReviewSpeaker,
   isAnalyzeResult,
   isStoredReviewResult,
+  mapEventTypeToAnalyzeApi,
+  mapRoommateToReviewSpeaker,
   submitReviewRequest,
   type AnalyzeRequest,
   type AnalyzeResult,
-  type ReviewRewriteSuggestion,
   type ReviewDialogueLine,
   type ReviewRequest,
   type ReviewResponse,
+  type ReviewRewriteSuggestion,
   type SimulationRequest,
   type SimulationResponse,
 } from '@/data/week1'
@@ -27,37 +27,32 @@ interface RecordLike {
   [key: string]: unknown
 }
 
-const fallbackDialogueMessage = '请先明确你本次沟通希望对方做出的具体调整。'
-const emptyLatestUserMessage = '暂无本轮用户输入'
-const fallbackSystemDialogueMessage = '暂无模拟对话缓存，请先返回模拟页完成一次对话。'
-
 interface ReviewContext {
   scenario: string
+  conversationId?: string
   dialogue: ReviewDialogueLine[]
   original_event?: ReviewRequest['original_event']
 }
 
-type ReviewSimulationCache = {
+interface ReviewSimulationCache {
   request: SimulationRequest
   response: SimulationResponse
   dialogue?: ReviewDialogueLine[]
 }
 
-const defaultRewriteSuggestion: ReviewRewriteSuggestion = {
-  feeling_expression: '先把“我最近睡眠受影响”作为开场，让对方知道你的处境。',
-  specific_request: '建议约定 11 点后使用耳机或调低音量，并提前说明你的作息边界。',
-  communication_space: '我想先一起定个试行的规则，我们看看一周后是否都能适应。',
-  instead: '你总是打游戏太吵，别人会不会想过我？',
-  instead_after: '我最近睡眠状态不太好，晚上声音比较容易影响我。我们能不能约定 11 点后戴耳机？',
+interface StoredReviewCache {
+  request: ReviewRequest
+  response: ReviewResponse
+  dialogue_fingerprint?: string
 }
 
-// Legacy phase-2 static gate markers retained while the v2 design uses renamed sections:
-// 复盘维度 感受表达 沟通空间 优化后的沟通话术 表达总结 表达优点 潜在问题 优化话术 后续行动建议 安全提示.
+const fallbackDialogueMessage = '请先明确你本次沟通希望对方做出的具体调整。'
+const fallbackSystemDialogueMessage = '暂无模拟对话缓存，请先返回模拟页完成一次对话。'
 
 const reviewError = ref('')
 const isLoading = ref(true)
 const storedDialogue = ref<ReviewDialogueLine[]>([])
-const reviewRequest = ref<ReviewRequest>({ scenario: '沟通复盘场景', dialogue: [] })
+const reviewRequest = ref<ReviewRequest>({ scenario: '沟通复盘场景' })
 const reviewResponse = ref<ReviewResponse>(buildDemoReviewResponse('复盘页初始化', reviewRequest.value))
 const animatedPerformanceScores = ref({ clarity: 0, empathy: 0, resolution: 0 })
 let reviewScoresAnimationFrame = 0
@@ -67,34 +62,23 @@ function isRecord(value: unknown): value is RecordLike {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function toJsonLine(value: unknown): string {
-  return JSON.stringify(value)
-}
-
 function requestFingerprint(value: ReviewRequest): string {
-  return toJsonLine({
+  return JSON.stringify({
     scenario: value.scenario,
-    dialogue: value.dialogue,
+    conversation_id: value.conversation_id,
     original_event: value.original_event,
   })
 }
 
-function buildFallbackAnalysisSource(parsed?: AnalyzeResult): ReviewContext['original_event'] | undefined {
-  if (!parsed) {
-    return undefined
-  }
-
-  return {
-    risk_level: parsed.risk_level,
-    pressure_score: parsed.pressure_score,
-  }
+function dialogueFingerprint(dialogue: ReviewDialogueLine[]): string {
+  return JSON.stringify(dialogue.slice(-50))
 }
 
-function hydrateStoredAnalysis() {
+function hydrateStoredAnalysis(): AnalyzeResult | undefined {
   try {
     const raw = localStorage.getItem(ANALYSIS_RESULT_STORAGE_KEY)
     if (!raw) {
-      return
+      return undefined
     }
 
     const parsed = JSON.parse(raw) as unknown
@@ -104,8 +88,10 @@ function hydrateStoredAnalysis() {
 
     localStorage.removeItem(ANALYSIS_RESULT_STORAGE_KEY)
   } catch {
-    // ignore malformed storage in sandboxed browsers
+    // ignore malformed storage
   }
+
+  return undefined
 }
 
 function hydrateStoredLastEvent(): AnalyzeRequest | null {
@@ -138,21 +124,21 @@ function hydrateStoredLastEvent(): AnalyzeRequest | null {
 function isSimulationReply(value: unknown): value is SimulationResponse['replies'][number] {
   return (
     isRecord(value) &&
-    typeof (value as { roommate?: unknown }).roommate === 'string' &&
-    typeof (value as { personality?: unknown }).personality === 'string' &&
-    typeof (value as { message?: unknown }).message === 'string'
+    typeof value.roommate === 'string' &&
+    typeof value.personality === 'string' &&
+    typeof value.message === 'string' &&
+    (typeof value.roommate_id === 'undefined' || typeof value.roommate_id === 'string')
   )
 }
 
 function isReviewDialogueLine(value: unknown): value is ReviewDialogueLine {
   return (
     isRecord(value) &&
+    typeof value.speaker === 'string' &&
+    typeof value.message === 'string' &&
     (value.speaker === 'user' ||
-      value.speaker === 'roommate_a' ||
-      value.speaker === 'roommate_b' ||
-      value.speaker === 'roommate_c' ||
-      value.speaker === 'system') &&
-    typeof value.message === 'string'
+      value.speaker === 'system' ||
+      value.speaker.startsWith('roommate_'))
   )
 }
 
@@ -161,30 +147,44 @@ function isStoredSimulationResult(value: unknown): value is ReviewSimulationCach
     return false
   }
 
-  const request = (value as { request?: unknown }).request
-  const response = (value as { response?: unknown }).response
-  const dialogue = (value as { dialogue?: unknown }).dialogue
+  const request = value.request
+  const response = value.response
+  const dialogue = value.dialogue
 
   if (!isRecord(request) || !isRecord(response)) {
     return false
   }
 
-  const replies = (response as { replies?: unknown }).replies
-  const safetyNote = (response as { safety_note?: unknown }).safety_note
-  const isDemo = (response as { is_demo?: unknown }).is_demo
-  const demoNotice = (response as { demo_notice?: unknown }).demo_notice
-
   return (
     typeof request.scenario === 'string' &&
-    typeof request.user_message === 'string' &&
-    Array.isArray(replies) &&
-    replies.every(isSimulationReply) &&
-    typeof safetyNote === 'string' &&
-    typeof isDemo === 'boolean' &&
-    typeof demoNotice === 'string' &&
+    (typeof request.user_message === 'undefined' || typeof request.user_message === 'string') &&
+    Array.isArray(response.replies) &&
+    response.replies.every(isSimulationReply) &&
+    typeof response.safety_note === 'string' &&
     (typeof dialogue === 'undefined' ||
       (Array.isArray(dialogue) && dialogue.every(isReviewDialogueLine)))
   )
+}
+
+function buildOriginalEvent(
+  analysis: AnalyzeResult | undefined,
+  lastEvent: AnalyzeRequest | null,
+): ReviewContext['original_event'] | undefined {
+  const originalEvent: ReviewContext['original_event'] = {}
+
+  if (analysis) {
+    originalEvent.risk_level = analysis.risk_level
+    originalEvent.pressure_score = analysis.pressure_score
+  }
+
+  if (lastEvent?.event_type) {
+    const mappedEventType = mapEventTypeToAnalyzeApi(lastEvent.event_type)
+    if (mappedEventType) {
+      originalEvent.event_type = mappedEventType
+    }
+  }
+
+  return Object.keys(originalEvent).length > 0 ? originalEvent : undefined
 }
 
 function buildDialogueFromSimulation(simulation: ReviewSimulationCache): ReviewDialogueLine[] {
@@ -193,17 +193,14 @@ function buildDialogueFromSimulation(simulation: ReviewSimulationCache): ReviewD
   }
 
   const lines: ReviewDialogueLine[] = []
-
-  if (simulation.request.user_message.trim().length > 0) {
-    lines.push({
-      speaker: 'user',
-      message: simulation.request.user_message.trim(),
-    })
+  const userMessage = simulation.request.user_message?.trim() ?? ''
+  if (userMessage) {
+    lines.push({ speaker: 'user', message: userMessage })
   }
 
-  for (const reply of simulation.response.replies.slice(0, 3)) {
+  for (const reply of simulation.response.replies) {
     lines.push({
-      speaker: mapRoommateToReviewSpeaker(reply.roommate),
+      speaker: mapRoommateToReviewSpeaker(reply.roommate, reply.roommate_id),
       message: reply.message,
     })
   }
@@ -214,20 +211,18 @@ function buildDialogueFromSimulation(simulation: ReviewSimulationCache): ReviewD
 function hydrateReviewContext(): ReviewContext {
   const analysis = hydrateStoredAnalysis()
   const lastEvent = hydrateStoredLastEvent()
-
   let scenario = '沟通复盘场景'
+  let conversationId: string | undefined
   let dialogue: ReviewDialogueLine[] = []
-  let originalEvent: ReviewContext['original_event'] | undefined
 
   try {
     const raw = localStorage.getItem(SIMULATION_RESULT_STORAGE_KEY)
-
     if (raw) {
       const parsed = JSON.parse(raw) as unknown
       if (isStoredSimulationResult(parsed)) {
         scenario = parsed.request.scenario || scenario
+        conversationId = parsed.response.conversation_id || parsed.request.conversation_id
         dialogue = buildDialogueFromSimulation(parsed)
-        storedDialogue.value = dialogue
       }
     }
   } catch {
@@ -245,43 +240,31 @@ function hydrateReviewContext(): ReviewContext {
         message: `未找到本轮模拟对话缓存。${eventHint}`,
       },
     ]
-    storedDialogue.value = dialogue
-    scenario = lastEvent?.event_type
-      ? `舍友${lastEvent.event_type === 'noise_conflict' ? '作息' : '沟通'}场景`
-      : scenario
-  }
-
-  originalEvent = buildFallbackAnalysisSource(analysis)
-
-  if (lastEvent?.event_type) {
-    const mappedEventType = mapEventTypeToAnalyzeApi(lastEvent.event_type)
-    if (mappedEventType) {
-      originalEvent = {
-        ...originalEvent,
-        event_type: mappedEventType,
-      }
-    }
+    scenario = lastEvent?.event_type ? '舍友沟通场景' : scenario
   }
 
   return {
     scenario,
+    conversationId,
     dialogue,
-    original_event:
-      originalEvent &&
-      Object.keys(originalEvent).length > 0
-        ? originalEvent
-        : undefined,
+    original_event: buildOriginalEvent(analysis, lastEvent),
   }
 }
 
+const reviewDialogue = computed(() => storedDialogue.value)
 const dialogueStats = computed(() => {
-  const dialogue = reviewRequest.value.dialogue
+  const dialogue = reviewDialogue.value
   return {
     userTurns: dialogue.filter((line) => line.speaker === 'user').length,
     roommateReplies: dialogue.filter((line) => line.speaker.startsWith('roommate_')).length,
   }
 })
 const hasReviewResult = computed(() => !isLoading.value && !reviewError.value)
+const suggestionCards = computed<ReviewRewriteSuggestion[]>(() =>
+  reviewResponse.value.rewrite_suggestions.length > 0
+    ? reviewResponse.value.rewrite_suggestions
+    : buildDemoReviewResponse('本地兜底建议', reviewRequest.value).rewrite_suggestions,
+)
 
 function normalizeReviewScore(value: number): number {
   if (!Number.isFinite(value)) {
@@ -341,10 +324,8 @@ function animateReviewScores() {
       return
     }
 
-    const elapsed = currentTime - startTime
-    const progress = Math.min(1, elapsed / durationMs)
+    const progress = Math.min(1, (currentTime - startTime) / durationMs)
     const easedProgress = 1 - (1 - progress) ** 3
-
     animatedPerformanceScores.value = {
       clarity: Math.round(targetScores.clarity * easedProgress),
       empathy: Math.round(targetScores.empathy * easedProgress),
@@ -361,7 +342,10 @@ function animateReviewScores() {
   reviewScoresAnimationFrame = window.requestAnimationFrame(step)
 }
 
-function hydrateStoredReview(payload: ReviewRequest): ReviewResponse | null {
+function hydrateStoredReview(
+  payload: ReviewRequest,
+  dialogue: ReviewDialogueLine[],
+): ReviewResponse | null {
   const clearStoredReview = () => {
     try {
       localStorage.removeItem(REVIEW_RESULT_STORAGE_KEY)
@@ -381,9 +365,19 @@ function hydrateStoredReview(payload: ReviewRequest): ReviewResponse | null {
       clearStoredReview()
       return null
     }
+    if (parsed.response.is_demo) {
+      clearStoredReview()
+      return null
+    }
 
-    const matches = requestFingerprint(parsed.request) === requestFingerprint(payload)
-    if (!matches) {
+    const storedReview = parsed as StoredReviewCache
+    const storedDialogueFingerprint =
+      storedReview.dialogue_fingerprint ?? dialogueFingerprint(storedReview.request.dialogue ?? [])
+
+    if (
+      requestFingerprint(parsed.request) !== requestFingerprint(payload) ||
+      storedDialogueFingerprint !== dialogueFingerprint(dialogue)
+    ) {
       clearStoredReview()
       return null
     }
@@ -391,7 +385,6 @@ function hydrateStoredReview(payload: ReviewRequest): ReviewResponse | null {
     return parsed.response
   } catch {
     clearStoredReview()
-    // ignore malformed cache
   }
 
   return null
@@ -421,25 +414,6 @@ const scoreCards = computed(() => [
   },
 ])
 
-const rewriteSuggestion = computed<ReviewRewriteSuggestion>(() => {
-  if (typeof reviewResponse.value.rewritten_message === 'string') {
-    return {
-      ...defaultRewriteSuggestion,
-      instead_after: reviewResponse.value.rewritten_message,
-    }
-  }
-
-  return reviewResponse.value.rewritten_message
-})
-
-const latestUserMessage = computed(() => {
-  const latestLine = [...reviewRequest.value.dialogue]
-    .reverse()
-    .find((line) => line.speaker === 'user' && line.message.trim().length > 0)
-
-  return latestLine?.message.trim() || emptyLatestUserMessage
-})
-
 function toSafeArray(value: string[]): string[] {
   return value.length > 0 ? value : ['暂无数据']
 }
@@ -458,14 +432,19 @@ function dialogueSpeakerLabel(speaker: ReviewDialogueLine['speaker']) {
 
 function dialogueSpeakerInitial(speaker: ReviewDialogueLine['speaker']) {
   if (speaker === 'user') {
-    return ''
+    return '你'
   }
 
   if (speaker === 'system') {
     return 'S'
   }
 
-  return speaker.replace('roommate_', '').toUpperCase()
+  const suffix = speaker.replace('roommate_', '').trim()
+  return suffix.slice(-2).toUpperCase() || 'AI'
+}
+
+function originalMessageLabel(suggestion: ReviewRewriteSuggestion) {
+  return suggestion.original_message.trim() || '未定位到原句'
 }
 
 async function initReview() {
@@ -473,13 +452,15 @@ async function initReview() {
   reviewError.value = ''
 
   const context = hydrateReviewContext()
+  storedDialogue.value = context.dialogue
   reviewRequest.value = {
     scenario: context.scenario,
-    dialogue: context.dialogue,
+    conversation_id: context.conversationId,
+    dialogue: context.conversationId ? undefined : context.dialogue.slice(-50),
     original_event: context.original_event,
   }
 
-  const cached = hydrateStoredReview(reviewRequest.value)
+  const cached = hydrateStoredReview(reviewRequest.value, context.dialogue)
   if (cached) {
     reviewResponse.value = cached
     isLoading.value = false
@@ -495,19 +476,27 @@ async function initReview() {
     await nextTick()
     animateReviewScores()
 
+    if (result.is_demo) {
+      return
+    }
+
     try {
       localStorage.setItem(
         REVIEW_RESULT_STORAGE_KEY,
         JSON.stringify({
           request: reviewRequest.value,
           response: result,
+          dialogue_fingerprint: dialogueFingerprint(context.dialogue),
         }),
       )
     } catch {
       // restricted browser sessions may block storage writes
     }
-  } catch {
-    reviewError.value = '复盘生成失败，请返回模拟页后重试'
+  } catch (error) {
+    reviewError.value =
+      error instanceof Error && error.message
+        ? error.message
+        : '复盘生成失败，请返回模拟页后重试'
   } finally {
     if (isLoading.value) {
       isLoading.value = false
@@ -524,7 +513,6 @@ onBeforeUnmount(() => {
   isReviewViewActive = false
   cancelReviewScoreAnimation()
 })
-
 </script>
 
 <template>
@@ -541,7 +529,13 @@ onBeforeUnmount(() => {
         <div>
           <h2>本次复盘基于完整模拟对话</h2>
           <p>场景：{{ reviewRequest.scenario || '沟通复盘场景' }}</p>
-          <p>复盘会结合用户多轮表达和三位舍友的连续反馈。</p>
+          <p>
+            {{
+              reviewRequest.conversation_id
+                ? '已连接本轮模拟记录。'
+                : '未找到本轮模拟记录，请返回模拟页重新演练。'
+            }}
+          </p>
         </div>
         <div class="review-dialogue-stats">
           <span>
@@ -573,158 +567,160 @@ onBeforeUnmount(() => {
 
       <Transition name="review-result-transition" mode="out-in">
         <div v-if="hasReviewResult" class="review-result-stack">
-      <section class="review-v2-section">
-        <h2>表现总结</h2>
-        <div class="review-score-grid">
-          <article
-            v-for="(card, index) in scoreCards"
-            :key="card.title"
-            :class="[
-              'review-score-card',
-              'review-card-reveal-item',
-              `review-score-card-${card.tone}`,
-            ]"
-            :style="{ '--review-card-delay': `${index * 80}ms` }"
-          >
-            <span aria-hidden="true"></span>
-            <div class="review-score-ring">
-              <strong>{{ card.animatedValue }}%</strong>
-            </div>
-            <h3>{{ card.title }}</h3>
-            <p>{{ card.description }}</p>
-          </article>
-        </div>
-      </section>
-
-      <div class="review-squiggle" aria-hidden="true"></div>
-
-      <section class="review-v2-section">
-        <h2>完整对话摘要</h2>
-        <div class="review-dialogue-list">
-          <template
-            v-for="(line, index) in reviewRequest.dialogue"
-            :key="`${line.speaker}-${index}-${line.message}`"
-          >
-            <article
-              :class="['review-dialogue-row', { 'review-dialogue-user': line.speaker === 'user' }]"
-            >
-              <div
-                v-if="line.speaker !== 'user'"
-                :class="['review-dialogue-avatar', `review-dialogue-avatar-${dialogueSpeakerInitial(line.speaker).toLowerCase()}`]"
-                aria-hidden="true"
+          <section class="review-v2-section">
+            <h2>表现总结</h2>
+            <p class="review-summary-inline pop-card pop-shadow">{{ reviewResponse.summary }}</p>
+            <div class="review-score-grid">
+              <article
+                v-for="(card, index) in scoreCards"
+                :key="card.title"
+                :class="[
+                  'review-score-card',
+                  'review-card-reveal-item',
+                  `review-score-card-${card.tone}`,
+                ]"
+                :style="{ '--review-card-delay': `${index * 80}ms` }"
               >
-                {{ dialogueSpeakerInitial(line.speaker) }}
-              </div>
-              <p>
-                <span>{{ dialogueSpeakerLabel(line.speaker) }}</span>
-                “{{ line.message }}”
-              </p>
-            </article>
-            <div v-if="index === 3 && reviewRequest.dialogue.length > 4" class="review-dialogue-break">
-              [ 第二轮模拟对话展开 ]
+                <span aria-hidden="true"></span>
+                <div class="review-score-ring">
+                  <strong>{{ card.animatedValue }}%</strong>
+                </div>
+                <h3>{{ card.title }}</h3>
+                <p>{{ card.description }}</p>
+              </article>
             </div>
-          </template>
-        </div>
-      </section>
+          </section>
 
-      <div class="review-squiggle" aria-hidden="true"></div>
+          <div class="review-squiggle" aria-hidden="true"></div>
 
-      <section class="review-v2-section">
-        <h2>闪光点与注意点</h2>
-        <div class="review-highlight-grid">
-          <div class="review-highlight-column">
-            <article
-              class="review-sticker-card review-sticker-good review-card-reveal-item pop-card pop-shadow"
-              style="--review-card-delay: 180ms"
-            >
-              <div class="review-sticker-badge">
-                <span class="material-symbol" aria-hidden="true">thumb_up</span>
-              </div>
-              <h3>本次表达的优点</h3>
+          <section class="review-v2-section">
+            <h2>完整对话摘要</h2>
+            <div class="review-dialogue-list">
+              <article
+                v-for="(line, index) in reviewDialogue"
+                :key="`${line.speaker}-${index}-${line.message}`"
+                :class="['review-dialogue-row', { 'review-dialogue-user': line.speaker === 'user' }]"
+              >
+                <div
+                  v-if="line.speaker !== 'user'"
+                  :class="[
+                    'review-dialogue-avatar',
+                    `review-dialogue-avatar-${dialogueSpeakerInitial(line.speaker).toLowerCase()}`,
+                  ]"
+                  aria-hidden="true"
+                >
+                  {{ dialogueSpeakerInitial(line.speaker) }}
+                </div>
+                <p>
+                  <span>{{ dialogueSpeakerLabel(line.speaker) }}</span>
+                  “{{ line.message }}”
+                </p>
+              </article>
+            </div>
+          </section>
+
+          <div class="review-squiggle" aria-hidden="true"></div>
+
+          <section class="review-v2-section">
+            <h2>闪光点与注意点</h2>
+            <div class="review-highlight-grid">
+              <article
+                class="review-sticker-card review-sticker-good review-card-reveal-item pop-card pop-shadow"
+                style="--review-card-delay: 180ms"
+              >
+                <div class="review-sticker-badge">
+                  <span class="material-symbol" aria-hidden="true">thumb_up</span>
+                </div>
+                <h3>本次表达的优点</h3>
+                <ul>
+                  <li v-for="item in toSafeArray(reviewResponse.strengths)" :key="`strength-${item}`">
+                    {{ item }}
+                  </li>
+                </ul>
+              </article>
+
+              <article
+                class="review-sticker-card review-sticker-risk review-card-reveal-item pop-card pop-shadow"
+                style="--review-card-delay: 260ms"
+              >
+                <div class="review-sticker-badge">
+                  <span class="material-symbol" aria-hidden="true">priority_high</span>
+                </div>
+                <h3>可能引发防御心理的表述</h3>
+                <ul>
+                  <li v-for="item in toSafeArray(reviewResponse.risks)" :key="`risk-${item}`">
+                    {{ item }}
+                  </li>
+                </ul>
+              </article>
+            </div>
+          </section>
+
+          <div class="review-squiggle" aria-hidden="true"></div>
+
+          <section class="review-v2-section review-script-section">
+            <h2>建议话术</h2>
+            <TransitionGroup name="review-suggestion" tag="div" class="review-suggestion-list">
+              <article
+                v-for="(suggestion, index) in suggestionCards"
+                :key="`${suggestion.message_index}-${suggestion.original_message}-${index}`"
+                class="review-suggestion-card pop-card pop-shadow"
+                :style="{ '--review-card-delay': `${index * 90}ms` }"
+              >
+                <header>
+                  <span>第 {{ suggestion.message_index + 1 }} 条用户表达</span>
+                  <strong>{{ suggestion.issue }}</strong>
+                </header>
+                <div class="speech-rewrite-row">
+                  <article class="speech-before">
+                    <p class="rewrite-label">原表达</p>
+                    <p>“{{ originalMessageLabel(suggestion) }}”</p>
+                  </article>
+                  <div class="speech-arrow" aria-hidden="true">
+                    <span class="material-symbol">arrow_forward</span>
+                  </div>
+                  <article class="speech-after">
+                    <p class="rewrite-label">建议表达</p>
+                    <p>“{{ suggestion.suggested_message }}”</p>
+                  </article>
+                </div>
+                <p class="review-suggestion-reason">{{ suggestion.reason }}</p>
+              </article>
+            </TransitionGroup>
+          </section>
+
+          <section class="review-bottom-grid">
+            <article class="review-block pop-card pop-shadow">
+              <h2>后续行动建议</h2>
               <ul>
-                <li v-for="item in toSafeArray(reviewResponse.strengths)" :key="`strength-${item}`">
+                <li v-for="item in toSafeArray(reviewResponse.next_steps)" :key="`next-${item}`">
                   {{ item }}
                 </li>
               </ul>
             </article>
-            <article
-              class="review-sticker-card review-sticker-good review-card-reveal-item pop-card pop-shadow"
-              style="--review-card-delay: 260ms"
-            >
-              <div class="review-sticker-badge">
-                <span class="material-symbol" aria-hidden="true">favorite</span>
-              </div>
-              <h3>给对方留出的协商空间</h3>
-              <p>{{ rewriteSuggestion.communication_space }}</p>
-            </article>
-          </div>
+          </section>
 
-          <div class="review-highlight-column">
-            <article
-              class="review-sticker-card review-sticker-risk review-card-reveal-item pop-card pop-shadow"
-              style="--review-card-delay: 340ms"
-            >
-              <div class="review-sticker-badge">
-                <span class="material-symbol" aria-hidden="true">priority_high</span>
-              </div>
-              <h3>可能引发防御心理的表述</h3>
-              <ul>
-                <li v-for="item in toSafeArray(reviewResponse.risks)" :key="`risk-${item}`">
-                  {{ item }}
-                </li>
-              </ul>
-            </article>
-            <article
-              class="review-sticker-card review-sticker-risk review-card-reveal-item pop-card pop-shadow"
-              style="--review-card-delay: 420ms"
-            >
-              <div class="review-sticker-badge">
-                <span class="material-symbol" aria-hidden="true">hearing</span>
-              </div>
-              <h3>可以更具体的请求</h3>
-              <p>{{ rewriteSuggestion.specific_request }}</p>
-            </article>
-          </div>
-        </div>
-      </section>
+          <section class="review-actions">
+            <RouterLink class="primary-action pop-shadow" :to="{ name: 'simulate' }">
+              再次演练
+              <span class="action-icon material-symbol">refresh</span>
+            </RouterLink>
+            <RouterLink class="secondary-action pop-shadow" :to="{ name: 'analysis' }">
+              查看压力分析
+              <span class="action-icon material-symbol">analytics</span>
+            </RouterLink>
+            <RouterLink class="secondary-action pop-shadow" :to="{ name: 'archive' }">
+              返回事件档案
+              <span class="action-icon material-symbol">archive</span>
+            </RouterLink>
+          </section>
 
-      <div class="review-squiggle" aria-hidden="true"></div>
-
-      <section class="review-v2-section review-script-section">
-        <h2>建议话术</h2>
-        <div class="speech-rewrite-row pop-card pop-shadow">
-          <article class="speech-before">
-            <p class="rewrite-label">而不是这样说</p>
-            <p>“{{ latestUserMessage }}”</p>
-          </article>
-          <div class="speech-arrow" aria-hidden="true">
-            <span class="material-symbol">arrow_forward</span>
-          </div>
-          <article class="speech-after">
-            <p class="rewrite-label">建议这样说</p>
-            <p>“{{ rewriteSuggestion.instead_after }}”</p>
-          </article>
-        </div>
-      </section>
-
-      <section class="review-actions">
-        <RouterLink class="primary-action pop-shadow" :to="{ name: 'simulate' }">
-          再次演练
-          <span class="action-icon material-symbol">refresh</span>
-        </RouterLink>
-        <RouterLink class="secondary-action pop-shadow" :to="{ name: 'analysis' }">
-          查看压力分析
-          <span class="action-icon material-symbol">analytics</span>
-        </RouterLink>
-        <RouterLink class="secondary-action pop-shadow" :to="{ name: 'archive' }">
-          返回事件档案
-          <span class="action-icon material-symbol">archive</span>
-        </RouterLink>
-      </section>
-
-      <p class="review-note">
-        {{ reviewResponse.safety_note || '本建议仅用于沟通练习，不作为心理诊断依据；如存在现实安全风险，请优先寻求线下支持。' }}
-      </p>
+          <p class="review-note">
+            {{
+              reviewResponse.safety_note ||
+              '本建议仅用于沟通练习，不作为心理诊断依据；如存在现实安全风险，请优先寻求线下支持。'
+            }}
+          </p>
         </div>
       </Transition>
     </div>

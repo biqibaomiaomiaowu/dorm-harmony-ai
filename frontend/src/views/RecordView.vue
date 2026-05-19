@@ -25,10 +25,44 @@ const descriptionPlaceholder = `例：${sampleAnalyzeRequest.description}`
 const form = reactive<EventRecordForm>({
   event_date: formatLocalDate(),
   ...sampleAnalyzeRequest,
+  emotions: [sampleAnalyzeRequest.emotion],
+  primary_emotion: sampleAnalyzeRequest.emotion,
   description: '',
 })
 const isSubmitting = ref(false)
 const submitError = ref('')
+
+function syncEmotionSelection() {
+  const optionValues = emotionOptions.map((option) => option.value)
+  const selected = optionValues.filter((value) => form.emotions.includes(value))
+  form.emotions = selected
+
+  if (selected.length === 0) {
+    form.primary_emotion = ''
+    form.emotion = ''
+    return
+  }
+
+  if (!selected.includes(form.primary_emotion)) {
+    form.primary_emotion = selected[0] ?? ''
+  }
+
+  form.emotion = form.primary_emotion
+}
+
+function setPrimaryEmotion(emotion: string) {
+  if (!form.emotions.includes(emotion)) {
+    form.emotions = [...form.emotions, emotion]
+  }
+
+  form.primary_emotion = emotion
+  form.emotion = emotion
+  syncEmotionSelection()
+}
+
+function isPrimaryEmotion(emotion: string) {
+  return form.primary_emotion === emotion
+}
 
 async function submitRecord() {
   submitError.value = ''
@@ -36,6 +70,12 @@ async function submitRecord() {
 
   if (!description) {
     submitError.value = '请先填写简要描述，便于生成更准确的分析'
+    return
+  }
+
+  syncEmotionSelection()
+  if (!form.primary_emotion || form.emotions.length === 0) {
+    submitError.value = '请至少选择一种当前情绪，并设置主要情绪'
     return
   }
 
@@ -153,13 +193,30 @@ async function submitRecord() {
           当前情绪
         </legend>
         <div class="emotion-row">
-          <label v-for="option in emotionOptions" :key="option.value" class="record-option">
-            <input v-model="form.emotion" type="radio" name="emotion" :value="option.value" />
-            <span class="record-option-body pill-option emotion-option">
-              <span class="material-symbol" aria-hidden="true">{{ option.icon }}</span>
-              <span>{{ option.label }}</span>
-            </span>
-          </label>
+          <div v-for="option in emotionOptions" :key="option.value" class="emotion-choice">
+            <label class="record-option">
+              <input
+                v-model="form.emotions"
+                type="checkbox"
+                name="emotions"
+                :value="option.value"
+                @change="syncEmotionSelection"
+              />
+              <span class="record-option-body pill-option emotion-option">
+                <span class="material-symbol" aria-hidden="true">{{ option.icon }}</span>
+                <span>{{ option.label }}</span>
+              </span>
+            </label>
+            <button
+              class="primary-emotion-btn"
+              :class="{ active: isPrimaryEmotion(option.value) }"
+              type="button"
+              :disabled="!form.emotions.includes(option.value)"
+              @click="setPrimaryEmotion(option.value)"
+            >
+              主要
+            </button>
+          </div>
         </div>
       </fieldset>
 
