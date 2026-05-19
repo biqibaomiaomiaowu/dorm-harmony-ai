@@ -16,6 +16,7 @@ import {
   type AnalyzeRequest,
   type AnalyzeResult,
   type ReviewDialogueLine,
+  type ReviewDialogueSpeaker,
   type ReviewRequest,
   type ReviewResponse,
   type ReviewRewriteSuggestion,
@@ -31,6 +32,7 @@ interface ReviewContext {
   scenario: string
   conversationId?: string
   dialogue: ReviewDialogueLine[]
+  roommateNames: Partial<Record<ReviewDialogueSpeaker, string>>
   original_event?: ReviewRequest['original_event']
 }
 
@@ -52,6 +54,7 @@ const fallbackSystemDialogueMessage = '暂无模拟对话缓存，请先返回�
 const reviewError = ref('')
 const isLoading = ref(true)
 const storedDialogue = ref<ReviewDialogueLine[]>([])
+const storedRoommateNames = ref<ReviewContext['roommateNames']>({})
 const reviewRequest = ref<ReviewRequest>({ scenario: '沟通复盘场景' })
 const reviewResponse = ref<ReviewResponse>(buildDemoReviewResponse('复盘页初始化', reviewRequest.value))
 const animatedPerformanceScores = ref({ clarity: 0, empathy: 0, resolution: 0 })
@@ -208,12 +211,44 @@ function buildDialogueFromSimulation(simulation: ReviewSimulationCache): ReviewD
   return lines
 }
 
+function buildRoommateNamesFromSimulation(
+  simulation: ReviewSimulationCache,
+): ReviewContext['roommateNames'] {
+  const roommateNames: ReviewContext['roommateNames'] = {}
+
+  if (Array.isArray(simulation.request.roommates)) {
+    for (const roommate of simulation.request.roommates) {
+      if (
+        isRecord(roommate) &&
+        typeof roommate.id === 'string' &&
+        typeof roommate.name === 'string'
+      ) {
+        const roommateId = roommate.id.trim()
+        const roommateName = roommate.name.trim()
+        if (roommateId && roommateName) {
+          roommateNames[roommateId as ReviewDialogueSpeaker] = roommateName
+        }
+      }
+    }
+  }
+
+  for (const reply of simulation.response.replies) {
+    const speaker = mapRoommateToReviewSpeaker(reply.roommate, reply.roommate_id)
+    if (!roommateNames[speaker] && reply.roommate.trim()) {
+      roommateNames[speaker] = reply.roommate.trim()
+    }
+  }
+
+  return roommateNames
+}
+
 function hydrateReviewContext(): ReviewContext {
   const analysis = hydrateStoredAnalysis()
   const lastEvent = hydrateStoredLastEvent()
   let scenario = '沟通复盘场景'
   let conversationId: string | undefined
   let dialogue: ReviewDialogueLine[] = []
+  let roommateNames: ReviewContext['roommateNames'] = {}
 
   try {
     const raw = localStorage.getItem(SIMULATION_RESULT_STORAGE_KEY)
@@ -223,6 +258,7 @@ function hydrateReviewContext(): ReviewContext {
         scenario = parsed.request.scenario || scenario
         conversationId = parsed.response.conversation_id || parsed.request.conversation_id
         dialogue = buildDialogueFromSimulation(parsed)
+        roommateNames = buildRoommateNamesFromSimulation(parsed)
       }
     }
   } catch {
@@ -247,6 +283,7 @@ function hydrateReviewContext(): ReviewContext {
     scenario,
     conversationId,
     dialogue,
+    roommateNames,
     original_event: buildOriginalEvent(analysis, lastEvent),
   }
 }
@@ -427,7 +464,7 @@ function dialogueSpeakerLabel(speaker: ReviewDialogueLine['speaker']) {
     return '系统提示'
   }
 
-  return speaker.replace('roommate_', '舍友 ').toUpperCase()
+  return storedRoommateNames.value[speaker] ?? speaker.replace('roommate_', '舍友 ').toUpperCase()
 }
 
 function dialogueSpeakerInitial(speaker: ReviewDialogueLine['speaker']) {
@@ -439,8 +476,14 @@ function dialogueSpeakerInitial(speaker: ReviewDialogueLine['speaker']) {
     return 'S'
   }
 
+  const label = storedRoommateNames.value[speaker] ?? ''
+  if (label) {
+    const compactLabel = label.replace(/^舍友\s*/, '').trim()
+    return (compactLabel || label).slice(-2)
+  }
+
   const suffix = speaker.replace('roommate_', '').trim()
-  return suffix.slice(-2).toUpperCase() || 'AI'
+  return suffix.replace(/^custom_?/i, '').slice(-2).toUpperCase() || 'AI'
 }
 
 function originalMessageLabel(suggestion: ReviewRewriteSuggestion) {
@@ -453,6 +496,7 @@ async function initReview() {
 
   const context = hydrateReviewContext()
   storedDialogue.value = context.dialogue
+  storedRoommateNames.value = context.roommateNames
   reviewRequest.value = {
     scenario: context.scenario,
     conversation_id: context.conversationId,
