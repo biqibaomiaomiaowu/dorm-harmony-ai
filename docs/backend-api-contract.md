@@ -59,7 +59,9 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 | `event_type` | string | 事件类型：`noise`、`schedule`、`hygiene`、`cost`、`privacy`、`emotion` |
 | `severity` | number | 严重程度，整数 1-5 |
 | `frequency` | string | 发生频率：`occasional`、`weekly_multiple`、`daily` |
-| `emotion` | string | 当前情绪：`irritable`、`anxious`、`wronged`、`angry`、`helpless`、`depressed` |
+| `emotion` | string | 当前主情绪，兼容旧字段：`irritable`、`anxious`、`wronged`、`angry`、`helpless`、`depressed` |
+| `emotions` | string[] | 可选，多情绪选择，最多 6 项；不传时由 `emotion` 或 `primary_emotion` 补齐 |
+| `primary_emotion` | string | 可选，主情绪；如果同时传 `emotion`，两者必须一致，且必须包含在 `emotions` 中 |
 | `has_communicated` | boolean | 是否已经沟通过 |
 | `has_conflict` | boolean | 是否已经出现争吵、冷战或关系恶化 |
 | `description` | string | 事件描述，去除首尾空白后不能为空，最长 500 字符 |
@@ -72,6 +74,11 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
   "severity": 4,
   "frequency": "weekly_multiple",
   "emotion": "anxious",
+  "emotions": [
+    "anxious",
+    "wronged"
+  ],
+  "primary_emotion": "anxious",
   "has_communicated": false,
   "has_conflict": true,
   "description": "舍友晚上打游戏声音很大，影响睡眠。"
@@ -117,6 +124,111 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 
 ## v2 事件档案接口
 
+### POST /api/events
+
+状态：已实现。保存一条事件档案记录，后端同步调用 `analyze_pressure()` 生成单条事件压力快照。
+
+请求字段：继承 `POST /api/analyze` 全部字段，并增加：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `event_date` | string | 事件发生日期，格式 `YYYY-MM-DD`，不能是未来日期 |
+
+请求示例：
+
+```json
+{
+  "event_date": "2026-05-15",
+  "event_type": "noise",
+  "severity": 4,
+  "frequency": "weekly_multiple",
+  "emotion": "anxious",
+  "emotions": [
+    "anxious",
+    "wronged"
+  ],
+  "primary_emotion": "anxious",
+  "has_communicated": false,
+  "has_conflict": true,
+  "description": "舍友晚上打游戏声音很大，影响睡眠。"
+}
+```
+
+响应字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | string | 后端生成的事件 id |
+| `created_at` | string | 后端创建时间，ISO datetime |
+| `event_date` | string | 事件发生日期 |
+| `event_type` / `severity` / `frequency` / `emotion` / `emotions` / `primary_emotion` / `has_communicated` / `has_conflict` / `description` | mixed | 与请求字段一致，已完成校验和归一化 |
+| `single_analysis` | object | 单条事件压力分析，字段同 `AnalyzeResponse` |
+
+### GET /api/events
+
+状态：已实现。返回当前本地 JSON 事件档案，不调用 AI 服务。
+
+响应字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `events` | object[] | 事件列表，按 `event_date desc, created_at desc` 排序 |
+
+响应示例：
+
+```json
+{
+  "events": [
+    {
+      "id": "event-id",
+      "event_date": "2026-05-15",
+      "event_type": "noise",
+      "severity": 4,
+      "frequency": "weekly_multiple",
+      "emotion": "anxious",
+      "emotions": [
+        "anxious",
+        "wronged"
+      ],
+      "primary_emotion": "anxious",
+      "has_communicated": false,
+      "has_conflict": true,
+      "description": "舍友晚上打游戏声音很大，影响睡眠。",
+      "created_at": "2026-05-15T12:00:00Z",
+      "single_analysis": {
+        "pressure_score": 76,
+        "risk_level": "high",
+        "risk_label": "冲突风险较高",
+        "main_sources": [
+          "噪音冲突",
+          "发生频率较高",
+          "尚未有效沟通",
+          "已出现争吵或冷战"
+        ],
+        "emotion_keywords": [
+          "焦虑"
+        ],
+        "trend_message": "当前压力值为 76，处于“冲突风险较高”状态。问题可能正在积累，建议先练习表达方式，再选择合适时机沟通。",
+        "suggestion": "建议先进行沟通演练，练习表达方式，再选择双方情绪相对平稳的时间进行现实沟通。",
+        "recommend_simulation": true,
+        "disclaimer": "本结果仅用于宿舍关系压力趋势提示，不作为心理诊断依据、医学诊断或人格评价依据。如压力持续升高或出现暴力风险、严重失眠等情况，请及时联系辅导员、心理老师、家人或可信任同学。"
+      }
+    }
+  ]
+}
+```
+
+### DELETE /api/events/{id}
+
+状态：已实现。删除一条事件档案记录；删除后前端应重新请求事件档案、总压力分析和 AI 心晴见解。
+
+响应语义：
+
+| 场景 | HTTP 状态码 | 说明 |
+| --- | --- | --- |
+| 删除成功 | `204` | 无响应体 |
+| 事件不存在 | `404` | 返回 `事件档案不存在或已被删除。` |
+
 ### GET /api/events/analysis
 
 状态：已实现。后端读取当前事件档案，并按当前评分模型重新计算总压力分析。
@@ -143,31 +255,51 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 
 说明：`发生频率较高`、`尚未有效沟通`、`已出现争吵或冷战` 仍会通过单条事件压力分影响贡献值，但不会作为 `source_breakdown` 的独立类别返回。
 
-## 第二阶段已实现 AI 接口
+## AI 与 V2 模拟/复盘接口
 
-以下内容为第二阶段朱春雯后端 AI 已实现接口。`/api/simulate` 与 `/api/review` 运行时通过 LangChain 调用 DeepSeek 官方 OpenAI 兼容 API，并返回便于前端展示的结构化响应。
+以下内容为当前已实现 AI 接口。`/api/simulate`、`/api/simulate/stream`、`/api/events/insight` 与 `/api/review` 运行时通过 LangChain 调用 DeepSeek 官方 OpenAI 兼容 API，并返回便于前端展示的结构化响应。
 
 ### POST /api/simulate
 
-状态：第二阶段已实现。运行时通过 LangChain 调用 DeepSeek `deepseek-v4-flash`；缺少 `DEEPSEEK_API_KEY` 且没有兼容的 `OPENAI_API_KEY` 时返回 `503`。
+状态：已实现，V2 已扩展为动态舍友画像、事件档案上下文、短期会话记忆和多轮模拟。运行时通过 LangChain 调用 DeepSeek `deepseek-v4-flash`；缺少 `DEEPSEEK_API_KEY` 且没有兼容的 `OPENAI_API_KEY` 时返回 `503`。
 
 请求字段：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
+| `conversation_id` | string | 可选，后端短期会话 id；继续已有会话时传入 |
+| `turn_id` | string | 可选，前端生成的用户回合 id，用于同一轮模拟的上下文提示 |
 | `scenario` | string | 宿舍沟通场景，最长 300 字符 |
-| `user_message` | string | 用户准备表达的话术，最长 500 字符 |
+| `user_message` | string | 用户准备表达的话术，最长 500 字符；`is_continuation=false` 时必填 |
 | `risk_level` | string | 可选，来自 `/api/analyze` 的风险等级，枚举为 `stable` / `pressure` / `high` / `severe` |
 | `context` | string | 可选，补充背景，最长 500 字符 |
 | `dialogue` | object[] | 可选，历史对话，最多 20 条；为空或不传时按单轮模拟处理 |
-| `dialogue[].speaker` | string | 发言者，枚举为 `user` / `roommate_a` / `roommate_b` / `roommate_c` / `system` |
+| `dialogue[].speaker` | string | 发言者，枚举为 `user` / `system` / 任意 `roommate_*` id；兼容前端中文展示名 |
 | `dialogue[].message` | string | 单条对话内容，最长 500 字符 |
+| `roommates` | object[] | 可选，1-5 位舍友画像；不传时使用默认三位舍友 |
+| `roommates[].id` | string | 舍友 id，必须以 `roommate_` 开头，且在本次请求内唯一 |
+| `roommates[].name` | string | 展示名，1-20 字符 |
+| `roommates[].personality_tag` | string | 性格标签，1-20 字符 |
+| `roommates[].tag_mode` | string | `preset` 或 `custom` |
+| `roommates[].preset_key` | string | `tag_mode=preset` 时必填，枚举 `direct` / `avoidant` / `harmony` |
+| `roommates[].traits` | object | `tag_mode=custom` 时必填，包含 6 个 0-5 数值属性 |
+| `roommates[].avatar` | string | 可选头像 key：`nailong`、`capybara_lulu`、`baobaolong`、`patrick`、`spongebob`；同次请求内不可重复 |
+| `use_event_archive` | boolean | 可选，是否让后端读取事件档案摘要作为模拟上下文 |
+| `is_continuation` | boolean | 可选，是否为同一 `conversation_id` 下的 continuation 请求；为 `true` 时必须传 `conversation_id`，且允许没有 `user_message` |
+| `max_replies` | number | 可选，本次最多返回回复条数，0-15 |
 
 响应字段：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `replies` | object[] | 多个虚拟舍友回复 |
+| `conversation_id` | string | 后端返回的短期会话 id，复盘可继续使用 |
+| `replies` | object[] | 虚拟舍友回复，最多 15 条 |
+| `replies[].roommate_id` | string | 对应 `roommates[].id` |
+| `replies[].roommate` | string | 舍友展示名 |
+| `replies[].personality` | string | 舍友性格标签 |
+| `replies[].message` | string | 回复内容，最长 500 字符 |
+| `archive_context_used` | boolean | 本次是否实际接入事件档案摘要 |
+| `archive_context_summary` | string | 可选，后端传入 AI 的受控事件档案摘要，最长 500 字符 |
 | `safety_note` | string | 非诊断性安全提示 |
 
 请求示例：
@@ -178,6 +310,34 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
   "user_message": "我想和你商量一下，晚上能不能把游戏声音调小一点，我最近睡眠受影响比较明显。",
   "risk_level": "high",
   "context": "用户尚未正式沟通过，但已经因为噪音问题感到焦虑。",
+  "use_event_archive": true,
+  "max_replies": 3,
+  "roommates": [
+    {
+      "id": "roommate_a",
+      "name": "舍友 A",
+      "personality_tag": "直接型",
+      "tag_mode": "preset",
+      "preset_key": "direct",
+      "avatar": "nailong"
+    },
+    {
+      "id": "roommate_b",
+      "name": "舍友 B",
+      "personality_tag": "回避型",
+      "tag_mode": "preset",
+      "preset_key": "avoidant",
+      "avatar": "capybara_lulu"
+    },
+    {
+      "id": "roommate_c",
+      "name": "舍友 C",
+      "personality_tag": "调和型",
+      "tag_mode": "preset",
+      "preset_key": "harmony",
+      "avatar": "baobaolong"
+    }
+  ],
   "dialogue": [
     {
       "speaker": "user",
@@ -197,46 +357,51 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 
 ```json
 {
+  "conversation_id": "conversation-1",
   "replies": [
     {
+      "roommate_id": "roommate_a",
       "roommate": "舍友 A",
       "personality": "直接型",
       "message": "我也没开很大声吧，不过如果真的影响你了，我可以试着戴耳机。"
     },
     {
+      "roommate_id": "roommate_b",
       "roommate": "舍友 B",
       "personality": "回避型",
       "message": "这个事情之后再说吧，我现在不太想聊。"
     },
     {
+      "roommate_id": "roommate_c",
       "roommate": "舍友 C",
       "personality": "调和型",
       "message": "我们可以一起定个休息时间规则，尽量别互相影响。"
     }
   ],
+  "archive_context_used": true,
+  "archive_context_summary": "事件档案：总事件 2 条，近 30 天 2 条；主要压力来源：噪音冲突；风险：high/冲突风险较高；最近事件：noise，严重程度 4，主要情绪 焦虑，情绪 焦虑、委屈，未沟通，有冲突，描述：舍友晚上打游戏声音很大，影响睡眠。",
   "safety_note": "本回复仅用于宿舍沟通演练，不代表真实舍友想法，不进行心理诊断，不进行医学判断，不进行人格评价。如沟通压力持续升高或出现现实安全风险，请联系辅导员、心理老师或其他现实支持。"
 }
 ```
 
 ### POST /api/simulate/stream
 
-状态：在保留 `/api/simulate` 完整 JSON 契约的基础上新增。该接口用于前端模拟页按顺序展示三位虚拟舍友回复；后端仍先生成并校验完整 `SimulateResponse`，再按舍友 A、舍友 B、舍友 C 的顺序输出事件。
+状态：已实现。在保留 `/api/simulate` 完整 JSON 契约的基础上新增。后端仍先生成并校验完整 `SimulateResponse`，再输出 `start`、若干 `reply` 和 `final` 事件。
 
-请求字段：与 `POST /api/simulate` 完全一致，包括可选 `dialogue` 历史对话字段。
+请求字段：与 `POST /api/simulate` 完全一致，包括可选 `conversation_id`、`roommates`、`use_event_archive`、`is_continuation`、`max_replies` 和 `dialogue` 字段。
 
 响应格式：`application/x-ndjson`，每行一个 JSON object。
 
 事件顺序：
 
 ```json
-{"type":"start"}
-{"type":"reply","reply":{"roommate":"舍友 A","personality":"直接型","message":"我也没开很大声吧，不过如果真的影响你了，我可以试着戴耳机。"}}
-{"type":"reply","reply":{"roommate":"舍友 B","personality":"回避型","message":"这个事情之后再说吧，我现在不太想聊。"}}
-{"type":"reply","reply":{"roommate":"舍友 C","personality":"调和型","message":"我们可以一起定个休息时间规则，尽量别互相影响。"}}
-{"type":"final","response":{"replies":[{"roommate":"舍友 A","personality":"直接型","message":"我也没开很大声吧，不过如果真的影响你了，我可以试着戴耳机。"},{"roommate":"舍友 B","personality":"回避型","message":"这个事情之后再说吧，我现在不太想聊。"},{"roommate":"舍友 C","personality":"调和型","message":"我们可以一起定个休息时间规则，尽量别互相影响。"}],"safety_note":"本回复仅用于宿舍沟通演练，不代表真实舍友想法，不进行心理诊断，不进行医学判断，不进行人格评价。如沟通压力持续升高或出现现实安全风险，请联系辅导员、心理老师或其他现实支持。"}}
+{"type":"start","conversation_id":"conversation-1"}
+{"type":"reply","reply":{"roommate_id":"roommate_a","roommate":"舍友 A","personality":"直接型","message":"我也没开很大声吧，不过如果真的影响你了，我可以试着戴耳机。"}}
+{"type":"reply","reply":{"roommate_id":"roommate_b","roommate":"舍友 B","personality":"回避型","message":"这个事情之后再说吧，我现在不太想聊。"}}
+{"type":"final","response":{"conversation_id":"conversation-1","replies":[{"roommate_id":"roommate_a","roommate":"舍友 A","personality":"直接型","message":"我也没开很大声吧，不过如果真的影响你了，我可以试着戴耳机。"},{"roommate_id":"roommate_b","roommate":"舍友 B","personality":"回避型","message":"这个事情之后再说吧，我现在不太想聊。"}],"archive_context_used":true,"archive_context_summary":"事件档案：总事件 2 条，近 30 天 2 条；主要压力来源：噪音冲突。","safety_note":"本回复仅用于宿舍沟通演练，不代表真实舍友想法，不进行心理诊断，不进行医学判断，不进行人格评价。如沟通压力持续升高或出现现实安全风险，请联系辅导员、心理老师或其他现实支持。"}}
 ```
 
-错误语义：配置缺失仍返回 `503`；LangChain / DeepSeek 调用失败或 AI 输出结构异常仍返回 `502`。这些错误会在流开始前以普通 HTTP 错误返回，不会输出半截 NDJSON。
+错误语义：配置缺失仍返回 `503`；缺失或失效的 `conversation_id` 返回 `400`；LangChain / DeepSeek 调用失败或 AI 输出结构异常仍返回 `502`。这些错误会在流开始前以普通 HTTP 错误返回，不会输出半截 NDJSON。
 
 ### POST /api/events/insight
 
@@ -278,21 +443,22 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 
 ### POST /api/review
 
-状态：第二阶段已实现。运行时通过 LangChain 调用 DeepSeek `deepseek-v4-flash`；缺少 `DEEPSEEK_API_KEY` 且没有兼容的 `OPENAI_API_KEY` 时返回 `503`。
+状态：已实现，V2 已扩展为支持 `conversation_id` 复盘和多条话术改写建议。运行时通过 LangChain 调用 DeepSeek `deepseek-v4-flash`；缺少 `DEEPSEEK_API_KEY` 且没有兼容的 `OPENAI_API_KEY` 时返回 `503`。
 
 请求字段：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
+| `conversation_id` | string | 可选，优先从后端短期会话记忆读取模拟对话；不传时使用 `dialogue` |
 | `scenario` | string | 沟通场景，最长 300 字符 |
-| `dialogue` | object[] | 用户与虚拟舍友的对话记录，至少 1 条，最多 20 条 |
-| `dialogue[].speaker` | string | 发言者，枚举为 `user` / `roommate_a` / `roommate_b` / `roommate_c` / `system` |
+| `dialogue` | object[] | 用户与虚拟舍友的对话记录，最多 50 条；未传 `conversation_id` 时需要提供有效对话 |
+| `dialogue[].speaker` | string | 发言者，枚举为 `user` / `system` / 任意 `roommate_*` id；兼容前端中文展示名 |
 | `dialogue[].message` | string | 单条对话内容，最长 500 字符 |
-| `original_event` | object | 可选，受控原始事件摘要；只允许 `event_type`、`severity`、`frequency`、`emotion`、`has_communicated`、`has_conflict`、`pressure_score`、`risk_level`、`risk_label`、`description`，禁止提交任意大 JSON 或未授权字段 |
+| `original_event` | object | 可选，受控原始事件摘要；只允许 `event_type`、`severity`、`frequency`、`emotion`、`emotions`、`primary_emotion`、`has_communicated`、`has_conflict`、`pressure_score`、`risk_level`、`risk_label`、`description`，禁止提交任意大 JSON 或未授权字段 |
 
 第三阶段兼容说明：
 
-- 标准契约仍以 `user`、`roommate_a`、`roommate_b`、`roommate_c`、`system` 为准。
+- 标准契约以 `user`、`system` 和 `roommate_*` 为准；默认三位舍友仍使用 `roommate_a`、`roommate_b`、`roommate_c`。
 - 为兼容当前前端复盘页展示文本，后端会在校验前把 `你`、`用户`、`我` 归一化为 `user`，把 `舍友 A` / `舍友A` / `舍友 A（直接型）` 等归一化为 `roommate_a`，`舍友 B` 系列归一化为 `roommate_b`，`舍友 C` 系列归一化为 `roommate_c`，`系统` 归一化为 `system`。
 - `original_event.event_type` 标准值仍为 `noise`、`schedule`、`hygiene`、`cost`、`privacy`、`emotion`。后端兼容 `noise_conflict`、`schedule_conflict`、`hygiene_conflict`、`expense_conflict`、`privacy_boundary`、`emotional_conflict` 等旧前端值。
 - 分析页派生的 `risk-stable`、`risk-pressure`、`risk-high`、`risk-severe` 不作为真实事件类型传给 AI，会归一化为 `None`；未知 `risk-*` 值仍返回 `422`。
@@ -309,6 +475,12 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 | `performance_scores.clarity` | number | 表达清晰度，0-100 整数 |
 | `performance_scores.empathy` | number | 共情能力，0-100 整数 |
 | `performance_scores.resolution` | number | 问题解决度，0-100 整数 |
+| `rewrite_suggestions` | object[] | 多条话术改写建议，至少 1 条 |
+| `rewrite_suggestions[].message_index` | number | 被改写的用户消息在对话中的索引 |
+| `rewrite_suggestions[].original_message` | string | 原始用户话术 |
+| `rewrite_suggestions[].issue` | string | 该话术的主要问题 |
+| `rewrite_suggestions[].suggested_message` | string | 建议改写版本 |
+| `rewrite_suggestions[].reason` | string | 改写原因 |
 | `rewritten_message` | string | 优化话术 |
 | `next_steps` | string[] | 后续行动建议 |
 | `safety_note` | string | 非诊断性安全提示 |
@@ -318,6 +490,7 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 ```json
 {
   "scenario": "舍友晚上打游戏声音较大，影响睡眠",
+  "conversation_id": "conversation-1",
   "dialogue": [
     {
       "speaker": "user",
@@ -330,6 +503,12 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
   ],
   "original_event": {
     "event_type": "noise",
+    "emotion": "anxious",
+    "emotions": [
+      "anxious",
+      "wronged"
+    ],
+    "primary_emotion": "anxious",
     "risk_level": "high",
     "pressure_score": 76
   }
@@ -354,6 +533,15 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
     "empathy": 76,
     "resolution": 71
   },
+  "rewrite_suggestions": [
+    {
+      "message_index": 0,
+      "original_message": "我想和你商量一下，晚上能不能把游戏声音调小一点，我最近睡眠受影响比较明显。",
+      "issue": "可以进一步明确希望调整的时间范围。",
+      "suggested_message": "我想和你商量一下，晚上 11 点后能不能戴耳机或调低音量？我最近睡眠受影响比较明显，也想一起找个不影响你娱乐的办法。",
+      "reason": "把时间、需求和共同解决意图说清楚，减少被理解成指责的可能。"
+    }
+  ],
   "rewritten_message": "我想和你商量一下，晚上 11 点后能不能戴耳机或调低音量？我最近睡眠受影响比较明显，也想一起找个不影响你娱乐的办法。",
   "next_steps": [
     "选择双方情绪平稳的时间沟通",
@@ -369,8 +557,18 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 | 场景 | HTTP 状态码 | 说明 |
 | --- | --- | --- |
 | 请求字段非法 | `422` | FastAPI / Pydantic 校验失败，返回字段级错误信息 |
-| 未配置 `DEEPSEEK_API_KEY` 或兼容的 `OPENAI_API_KEY` | `503` | AI 服务未配置，`/api/simulate`、`/api/review` 和 `/api/events/insight` 不返回模板伪结果 |
+| conversation memory 不存在 | `400` | `/api/simulate`、`/api/simulate/stream` 或 `/api/review` 传入旧 `conversation_id` 时，提示重新演练 |
+| 当前没有事件档案 | `400` | `/api/events/insight` 在没有事件记录时返回 `请先记录至少一条事件后再生成 AI 心晴见解。` |
+| 删除不存在事件 | `404` | `DELETE /api/events/{id}` 返回 `事件档案不存在或已被删除。` |
+| 未配置 `DEEPSEEK_API_KEY` 或兼容的 `OPENAI_API_KEY` | `503` | AI 服务未配置，`/api/simulate`、`/api/simulate/stream`、`/api/review` 和 `/api/events/insight` 不返回模板伪结果 |
 | LangChain / DeepSeek 调用失败 | `502` | 上游模型调用失败，后端返回 AI 服务调用失败语义 |
 | AI 输出结构不符合契约或安全边界 | `502` | 模型输出无法解析为接口约定结构，或 `safety_note` 缺少必要安全边界，后端返回 AI 输出结构错误语义 |
 
 注意：前端在无 `DEEPSEEK_API_KEY` 或兼容 `OPENAI_API_KEY` 时可能展示本地演示兜底，但后端真实接口语义仍是 `503`，不代表 AI 接口真实生成成功。
+
+## 当前运行限制
+
+- 事件档案使用后端本地 JSON 文件保存，默认路径为 `backend/.runtime/events.json`；可用 `DORM_HARMONY_EVENT_STORE_PATH` 覆盖。该存储适合本地 Demo，不提供账号体系、云端同步、多用户隔离或生产数据库能力。
+- 会话记忆使用后端单进程内存保存，`conversation_id` 只在当前 FastAPI 进程内有效；后端重启、换进程或传入旧 id 后，conversation memory 会丢失。
+- 浏览器刷新后前端可能恢复 `localStorage` 中的 `conversation_id`，但 conversation memory 只保存在后端单进程内，不能靠刷新持久化；后端重启、换进程或旧 id 会导致 memory 丢失，需要重新演练。
+- 本接口契约不包含真实用户身份、权限、后台管理或长期个人数据管理能力。

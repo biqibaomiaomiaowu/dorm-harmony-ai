@@ -6,7 +6,7 @@
 
 项目形式：网页版 AI 心理支持工具
 
-技术路线：Vue + Python FastAPI + LangChain + SQLite / JSON
+技术路线：Vue + Python FastAPI + LangChain + 本地 JSON
 
 开发周期：6 天集中开发，第 7 天单独整理线上提交材料
 
@@ -20,7 +20,7 @@
 开发目标：
 
 - 完成一个可在线演示的网页 Demo。
-- 跑通“宿舍事件记录 -> 压力分析 -> AI 沟通模拟 -> 沟通复盘报告”的核心流程。
+- 跑通“宿舍事件记录 -> 事件档案 -> 宿舍总压力分析 -> AI 沟通模拟 -> 沟通复盘报告”的核心流程。
 - 准备线上提交所需的策划文档、演示视频、宣传海报、创意与场景说明。
 - 产品定位保持非诊断性心理支持工具，不输出医学诊断或人格评价。
 
@@ -35,7 +35,10 @@
 | 压力分析 | 根据事件信息计算压力值，返回风险等级、主要原因和建议 | 必须 |
 | AI 沟通模拟 | 用户选择场景并输入话术，系统生成多个虚拟舍友回复 | 必须 |
 | 沟通复盘报告 | 分析用户表达，输出优点、问题、优化话术、后续建议和安全提示 | 必须 |
-| 历史记录 | 保存或展示历史事件记录 | 可选，时间不足时不作为核心验收项 |
+| 事件档案 | 保存、展示和删除已记录事件，并作为总压力分析和 AI 心晴见解的数据来源 | V2 已实现 |
+| 多情绪与主情绪 | 事件记录支持多选当前情绪，并明确主情绪用于评分 | V2 已实现 |
+| 自定义舍友与多轮模拟 | 模拟页支持配置舍友画像、短期会话记忆和多轮回复 | V2 已实现 |
+| 复盘评分 | 沟通复盘输出表现评分和多条话术改写建议 | V2 已实现 |
 
 ## 3. 六天开发计划总览
 
@@ -55,7 +58,7 @@
 
 | 任务编号 | 任务 | 具体要求 | 阶段交付物 | 验收标准 |
 | --- | --- | --- | --- | --- |
-| B1-1 | 明确 Demo 功能范围 | 确认 Demo 只覆盖事件记录、压力分析、AI 沟通模拟、沟通复盘四个核心流程；历史记录作为可选功能 | 项目功能范围说明 | 文档中清楚写明必须功能和可选功能 |
+| B1-1 | 明确 Demo 功能范围 | 第一阶段确认 Demo 先覆盖事件记录、压力分析、AI 沟通模拟、沟通复盘四个核心流程；V2 已把原计划中的历史记录能力升级为事件档案已实现 | 项目功能范围说明 | 文档中清楚写明核心功能、V2 已实现功能和当前限制 |
 | B1-2 | 设计接口字段草案 | 设计 `/api/analyze`、`/api/simulate`、`/api/review` 的请求和响应字段 | 接口字段草案 | 每个接口包含路径、方法、请求 JSON 示例、响应 JSON 示例 |
 | B1-3 | 设计压力评分模型 | 确定事件严重程度、发生频率、情绪强度、沟通状态、冲突升级情况的权重 | 压力评分模型说明 | 包含权重表、评分区间、风险等级说明 |
 | B1-4 | 搭建 FastAPI 后端基础结构 | 准备后端入口、数据结构、评分模块、安全提示模块 | 后端基础项目结构 | 后端服务可以启动，基础路由可访问 |
@@ -92,14 +95,14 @@
 
 | 任务编号 | 当前状态 | 证据 |
 | --- | --- | --- |
-| B1-1 | 已完成 | `README.md`、本文件和 `docs/phase1-status.md` 已明确 Demo 核心范围与第一阶段边界 |
+| B1-1 | 已完成，V2 已更新 | `README.md`、本文件和 `docs/v2-features.md` 已明确当前核心流程和事件档案已实现；`docs/phase1-status.md` 保留第一阶段当时边界 |
 | B1-2 | 已完成接口字段草案 | 第一阶段已在 `docs/backend-api-contract.md` 记录 `/health`、`/api/analyze` 已实现接口，并为 `/api/simulate`、`/api/review` 补充请求 / 响应 JSON 草案；第二阶段已将两者升级为后端 AI 已实现接口 |
 | B1-3 | 已完成 | `docs/scoring-model.md` 记录第一阶段规则评分模型、风险区间和典型案例 |
 | B1-4 | 已完成 | `backend/app/main.py`、`backend/app/schemas.py`、`backend/app/scoring.py`、`backend/app/safety.py` 已形成 FastAPI 后端基础结构 |
 | B1-5 | 已完成 | `POST /api/analyze` 已返回结构化压力分析结果，`backend/tests/test_api.py` 覆盖典型 76 分案例 |
 | B1-6 | 已完成 | `README.md`、`docs/backend-api-contract.md`、`docs/scoring-model.md`、`docs/phase1-status.md` 已补齐第一阶段基础文档 |
 
-第一阶段当时未完成或未覆盖内容：`/api/simulate` 运行时、`/api/review` 运行时、LangChain / 大模型调用、历史记录存储与查询。第二阶段后端 AI 已完成 `/api/simulate`、`/api/review` 和 LangChain/DeepSeek 调用；历史记录存储与查询、曹乐负责的前端任务仍不在本次后端文档任务中变更。
+第一阶段当时未完成或未覆盖内容：`/api/simulate` 运行时、`/api/review` 运行时、LangChain / 大模型调用、事件档案存储与查询。后续第二阶段已完成 `/api/simulate`、`/api/review` 和 LangChain/DeepSeek 调用；V2 已完成事件档案、总压力分析、事件档案 AI 心晴见解和相关前端页面。
 
 ## 5. 第二阶段：核心功能开发
 
@@ -113,21 +116,21 @@
 | --- | --- | --- | --- | --- |
 | B2-1 | 完善 `/api/analyze` 评分逻辑 | 根据严重程度、频率、情绪、沟通状态、冲突升级情况计算不同压力值 | 压力分析接口完整版 | 不同输入能得到不同压力值和风险等级 |
 | B2-2 | 设计多角色 Prompt | 固定舍友 A 直接型、舍友 B 回避型、舍友 C 调和型，限制场景为宿舍沟通 | 多角色 Prompt 模板 | Prompt 能稳定生成不同角色回复 |
-| B2-3 | 实现 `/api/simulate` 接口 | 接收场景、用户话术、可选上下文，返回多个虚拟舍友回复 | 沟通模拟接口 | 返回 JSON 中包含角色名、性格类型、回复内容 |
-| B2-4 | 实现 `/api/review` 接口 | 接收对话记录，返回表达总结、优点、问题、优化话术、后续建议、安全提示 | 复盘报告接口 | 返回结构完整，前端可直接展示 |
+| B2-3 | 实现 `/api/simulate` 接口 | 接收场景、用户话术、可选上下文，返回多个虚拟舍友回复；V2 已扩展为支持 `conversation_id`、自定义舍友、事件档案上下文和多轮回复 | 沟通模拟接口 | 返回 JSON 中包含会话 id、角色名、性格类型、回复内容 |
+| B2-4 | 实现 `/api/review` 接口 | 接收对话记录或 V2 `conversation_id`，返回表达总结、优点、问题、表现评分、优化话术、后续建议、安全提示 | 复盘报告接口 | 返回结构完整，前端可直接展示 |
 | B2-5 | 添加心理安全边界 | 避免输出心理诊断、人格评价、攻击性建议；压力较高时提示寻求现实支持 | 安全边界提示逻辑 | 接口输出包含非诊断性提示 |
 | B2-6 | 准备演示用样例数据 | 准备噪音冲突、卫生分工、隐私边界等典型场景 | 演示样例数据 | 前端可以使用样例快速演示核心流程 |
 
 ### 5.1.1 第二阶段后端 / AI 状态记录
 
-本次状态记录只覆盖朱春雯负责的第二阶段后端 AI 任务。当前后端已完成 `/api/analyze`、`/api/simulate` 和 `/api/review` 运行时能力；前端 AI 页面联调、完整 Demo、历史记录存储与查询、第 7 天演示视频和宣传海报仍属于曹乐任务、第三阶段或后续提交材料范围。
+本次状态记录原本只覆盖朱春雯负责的第二阶段后端 AI 任务。当前代码已在此基础上完成 V2 增强：`/api/events`、`/api/events/analysis`、`/api/events/insight`、`/api/simulate/stream`、短期会话记忆、自定义舍友和前端核心页面均已落地；第 7 天演示视频和宣传海报仍属于线上提交材料整理范围。
 
 | 任务编号 | 当前状态 | 证据 |
 | --- | --- | --- |
 | B2-1 | 已完成 | `backend/app/scoring.py` 与 `backend/tests/test_scoring.py` 覆盖不同输入对应不同压力值和风险等级 |
 | B2-2 | 已完成 | `backend/app/ai_prompts.py` 固定多角色 Prompt、结构化输出要求和宿舍沟通安全边界 |
-| B2-3 | 已完成 | `backend/app/main.py` 暴露 `POST /api/simulate`；`backend/app/ai_service.py` 通过 LangChain/DeepSeek 生成结构化舍友回复 |
-| B2-4 | 已完成 | `backend/app/main.py` 暴露 `POST /api/review`；`backend/app/ai_service.py` 通过 LangChain/DeepSeek 生成沟通复盘结构化结果 |
+| B2-3 | 已完成并 V2 扩展 | `backend/app/main.py` 暴露 `POST /api/simulate` 和 `POST /api/simulate/stream`；`backend/app/ai_service.py` 通过 LangChain/DeepSeek 生成结构化舍友回复并维护短期会话记忆 |
+| B2-4 | 已完成并 V2 扩展 | `backend/app/main.py` 暴露 `POST /api/review`；`backend/app/ai_service.py` 可基于 `conversation_id` 或对话记录生成沟通复盘结构化结果 |
 | B2-5 | 已完成 | `backend/app/ai_prompts.py` 与 `backend/app/ai_service.py` 约束非诊断性、安全提示和现实支持建议 |
 | B2-6 | 已完成 | `backend/app/demo_data.py` 提供噪音冲突、卫生分工、隐私边界演示样例 |
 
@@ -155,7 +158,7 @@
 | AI 沟通模拟页面 | 曹乐 | 可选择场景、输入话术、展示多角色回复 |
 | 多角色聊天展示组件 | 曹乐 | 角色区分清楚，回复内容可读 |
 | 沟通复盘报告页面 | 曹乐 | 报告分区完整，适合演示 |
-| 前后端接口对接初版 | 曹乐 | 目标为 `/api/analyze`、`/api/simulate`、`/api/review` 均完成前端调用；本次后端 AI 状态记录未确认前端联调完成 |
+| 前后端接口对接初版 | 曹乐 | `/api/analyze`、`/api/events`、`/api/events/analysis`、`/api/events/insight`、`/api/simulate`、`/api/review` 已有前端调用；`/api/simulate/stream` 已保留前端请求 helper |
 
 ## 6. 第三阶段：联调优化与开发收尾
 
@@ -167,9 +170,9 @@
 
 | 任务编号 | 任务 | 具体要求 | 阶段交付物 | 验收标准 |
 | --- | --- | --- | --- | --- |
-| B3-1 | 完成接口联调 | 确认前端可稳定调用 `/api/analyze`、`/api/simulate`、`/api/review` | 接口联调结果记录 | 三个接口均能被前端正常调用 |
+| B3-1 | 完成接口联调 | 确认前端可稳定调用 `/api/analyze`、事件档案接口、`/api/events/analysis`、`/api/events/insight`、`/api/simulate`、`/api/review`，并保留 `/api/simulate/stream` 请求 helper | 接口联调结果记录 | 核心接口可被前端正常调用，流式接口契约和 helper 已对齐 |
 | B3-2 | 修复后端问题 | 修复字段不一致、返回格式不稳定、异常输入报错等问题 | 后端问题修复记录 | 常见异常输入不会导致服务崩溃 |
-| B3-3 | 整理技术说明 | 说明 FastAPI、压力评分模型、LangChain Prompt、数据存储方式和安全边界 | 技术说明文档 | 其他人能根据说明理解后端实现 |
+| B3-3 | 整理技术说明 | 说明 FastAPI、压力评分模型、LangChain Prompt、本地 JSON 事件档案、短期会话记忆和安全边界 | 技术说明文档 | 其他人能根据说明理解当前实现 |
 | B3-4 | 完善最终策划文档 | 确保需求痛点、功能设计、技术方案、开发计划、伦理说明一致 | 最终作品策划文档 | 文档覆盖线上提交要求中的策划文档内容 |
 | B3-5 | 整理开发限制说明 | 记录 Demo 数据范围、AI 输出依赖、未实现拓展功能 | 开发收尾说明 | 明确当前 Demo 能力边界 |
 
@@ -181,9 +184,9 @@
 | --- | --- | --- |
 | B3-1 | 已完成朱春雯侧静态联调准备；真实浏览器/API smoke 未验证 | `frontend/vite.config.ts` 已配置 `/api` 代理；`backend/app/main.py` 已配置本地 CORS；`frontend/scripts/verify-phase3.mjs` 校验前端相对 API 路径与代理配置 |
 | B3-2 | 已完成本轮后端问题修复 | `backend/app/schemas.py` 兼容当前前端复盘 payload，并继续拒绝未授权 extra 字段；`backend/tests/test_api.py` 覆盖 CORS、字段兼容和异常输入 |
-| B3-3 | 已完成技术说明 | `docs/phase3-status.md`、`README.md` 和 `docs/backend-api-contract.md` 已说明 FastAPI、评分模型、LangChain Prompt、AI 服务、数据存储当前状态和安全边界 |
-| B3-4 | 已完成当前实现校准 | `docs/sheyou-xinqing-planning.md` 已补充当前实现与后续拓展边界 |
-| B3-5 | 已完成开发限制说明 | `docs/phase3-status.md` 已记录 Demo 数据范围、AI Key 依赖、未实现历史记录和第 7 天材料边界 |
+| B3-3 | 已完成技术说明并 V2 更新 | `README.md`、`docs/backend-api-contract.md`、`docs/scoring-model.md` 和 `docs/v2-features.md` 已说明 FastAPI、评分模型、LangChain Prompt、AI 服务、本地 JSON 事件档案、短期会话记忆和安全边界 |
+| B3-4 | 已完成当前实现校准 | `README.md` 和 `docs/v2-features.md` 已补充当前 V2 实现与运行限制 |
+| B3-5 | 已完成开发限制说明 | 当前限制包括本地 JSON 存储、会话记忆仅在单进程内有效、后端重启后 conversation memory 丢失、AI Key 缺失时真实 AI 接口返回 `503` |
 
 ### 6.2 曹乐任务
 
@@ -213,7 +216,29 @@
 | C3-2 | 最终问题检查 | 列出最后仍存在的问题、影响范围和规避方式 | 最终问题清单 | 问题不阻断核心演示 |
 | C3-3 | 线上提交素材预整理 | 确认哪些截图、文档、视频素材需要在第 7 天使用 | 素材预整理清单 | 第 7 天可以直接进入材料制作 |
 
-### 6.4 第三阶段交付物清单
+## 6.4 V2 运行增强状态
+
+V2 在前三阶段 Demo 基线之上完成以下增量：
+
+| 功能 | 当前状态 | 证据 |
+| --- | --- | --- |
+| 事件档案 | 已实现 | `backend/app/event_store.py`、`frontend/src/views/EventArchiveView.vue`、`POST/GET/DELETE /api/events` |
+| 宿舍总压力分析 | 已实现 | `backend/app/archive_analysis.py`、`GET /api/events/analysis`、`frontend/src/views/AnalysisView.vue` |
+| 事件档案 AI 心晴见解 | 已实现 | `POST /api/events/insight`、`backend/app/ai_prompts.py`、`frontend/src/data/eventArchive.ts` |
+| 多情绪记录 | 已实现 | `backend/app/schemas.py` 支持 `emotions` 和 `primary_emotion`，`frontend/src/views/RecordView.vue` 提供多选 |
+| 自定义舍友 | 已实现 | `RoommateProfile` 支持预设/自定义标签、头像和属性，模拟页支持 1-5 位舍友 |
+| 多轮模拟 | 已实现 | `/api/simulate` 支持 `conversation_id`、`turn_id`、`is_continuation`、`max_replies` 和短期会话记忆 |
+| 流式模拟契约 | 已实现 | `/api/simulate/stream` 输出 NDJSON `start`、`reply`、`final` 事件 |
+| 复盘评分 | 已实现 | `/api/review` 返回 `performance_scores` 和 `rewrite_suggestions` |
+
+V2 当前限制：
+
+- 事件档案使用后端本地 JSON 文件保存，默认路径为 `backend/.runtime/events.json`；不提供账号体系、云端同步、多用户隔离或生产数据库能力。
+- 会话记忆保存在当前 FastAPI 进程内，`conversation_id` 只在单进程内有效；后端重启、换进程或旧 id 会导致 memory 丢失。
+- 浏览器刷新后前端可恢复部分 `localStorage` 状态，但 conversation memory 只保存在后端单进程内，不能靠刷新持久化；后端重启、换进程或旧 id 会导致 memory 丢失，需要重新演练。
+- 未配置 `DEEPSEEK_API_KEY` 或兼容 `OPENAI_API_KEY` 时，真实 AI 接口返回 `503`，前端演示兜底不代表后端 AI 成功。
+
+### 6.5 第三阶段交付物清单
 
 | 交付物 | 负责人 | 内容要求 |
 | --- | --- | --- |
@@ -245,8 +270,8 @@
 | 交付物 | 内容要求 | 负责人 | 来源 |
 | --- | --- | --- | --- |
 | 作品策划文档 | 涵盖需求痛点、详细功能介绍、技术方案、开发计划、安全边界 | 朱春雯 | 第 1-6 天持续完善，第 7 天定稿 |
-| 网页 Demo | 可演示事件记录、压力分析、AI 沟通模拟、沟通复盘报告 | 朱春雯 + 曹乐 | 第 1-6 天开发完成 |
-| Demo 展示素材 | 展示策划文档中设计的核心功能 | 朱春雯 + 曹乐 | 从网页 Demo 和页面截图中整理 |
+| 网页 Demo | 可演示事件记录、事件档案、宿舍总压力分析、AI 沟通模拟、沟通复盘报告 | 朱春雯 + 曹乐 | 第 1-6 天开发完成，V2 已增强 |
+| Demo 展示素材 | 展示策划文档中设计的核心功能和 V2 增量功能 | 朱春雯 + 曹乐 | 从网页 Demo 和页面截图中整理 |
 | 产品演示视频 | 不超过 3 分钟，展示产品功能和操作流程 | 曹乐 | 第 7 天录制 |
 | 宣传海报 | 展示作品名称、核心痛点、主要功能、操作流程、应用价值 | 曹乐 | 第 7 天制作 |
 | 创意与场景说明 | 500 字以内，说明作品创意、使用场景和价值 | 朱春雯 | 第 7 天定稿 |
@@ -271,11 +296,11 @@
 
 | 验收项 | 标准 |
 | --- | --- |
-| 核心流程 | 能连续完成事件记录、压力分析、AI 沟通模拟、沟通复盘报告 |
-| 后端接口 | `/api/analyze`、`/api/simulate`、`/api/review` 均能返回结构化 JSON |
-| 前端页面 | 首页、事件记录页、压力分析页、AI 沟通模拟页、沟通复盘页均可访问 |
-| 压力分析 | 不同输入能产生不同压力值和风险等级 |
-| AI 模拟 | 能展示多个不同性格的虚拟舍友回复 |
-| 复盘报告 | 能输出表达总结、优点、问题、优化话术、后续建议和安全提示 |
+| 核心流程 | 能连续完成事件记录、事件档案查看、宿舍总压力分析、AI 沟通模拟、沟通复盘报告 |
+| 后端接口 | `/api/analyze`、`/api/events`、`/api/events/analysis`、`/api/events/insight`、`/api/simulate`、`/api/simulate/stream`、`/api/review` 均有明确契约并返回结构化结果 |
+| 前端页面 | 首页、事件记录页、事件档案页、宿舍总压力分析页、AI 沟通模拟页、沟通复盘页均可访问 |
+| 压力分析 | 单条事件和事件档案总压力均能根据输入产生不同压力值和风险等级 |
+| AI 模拟 | 能展示多个不同性格或自定义画像的虚拟舍友回复，并支持短期多轮对话 |
+| 复盘报告 | 能输出表达总结、优点、问题、表现评分、多条优化话术、后续建议和安全提示 |
 | 安全边界 | 不输出心理诊断、人格评价或攻击性建议 |
 | 线上材料 | 策划文档、网页 Demo、演示视频、宣传海报、创意与场景说明准备完整 |
