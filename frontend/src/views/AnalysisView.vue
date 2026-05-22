@@ -1,6 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
+import * as echarts from 'echarts/core'
+import { CanvasRenderer } from 'echarts/renderers'
+import { LineChart } from 'echarts/charts'
+import { GridComponent, TitleComponent, TooltipComponent } from 'echarts/components'
 
 import { ANALYSIS_RESULT_STORAGE_KEY } from '@/data/week1'
 import {
@@ -15,6 +19,12 @@ import {
   type EventRecord,
   type ArchiveInsightResponse,
 } from '@/data/eventArchive'
+
+type TrendPoint = {
+  date: string
+  score: number
+  count: number
+}
 
 const EMPTY_ARCHIVE_RESULT: ArchiveAnalysisResult = {
   pressure_score: 0,
@@ -45,8 +55,38 @@ const insightStatus = ref<'idle' | 'loading' | 'ready' | 'missing-key' | 'unavai
 const insightError = ref('')
 const animatedScorePercent = ref(0)
 const animatedSourcePercents = ref<Record<string, number>>({})
+const trendPoints = ref<TrendPoint[]>([])
+const trendChartRef = ref<HTMLElement | null>(null)
+const trendChartMeta = computed(() => {
+  if (!trendPoints.value.length) {
+    return null
+  }
+
+  const firstPoint = trendPoints.value[0]!
+  const lastPoint = trendPoints.value.at(-1)
+
+  const totalCount = trendPoints.value.reduce((sum, point) => sum + point.count, 0)
+  const avgScore = Math.round(
+    trendPoints.value.reduce((sum, point) => sum + point.score * point.count, 0) / totalCount,
+  )
+
+  return {
+    dateRange: `${firstPoint.date} ~ ${lastPoint?.date ?? firstPoint.date}`,
+    avgScore,
+    totalCount,
+  }
+})
+
 let analysisAnimationFrame = 0
 let isAnalysisViewActive = false
+let trendChartInstance: echarts.ECharts | null = null
+let trendChartResizeHandler: (() => void) | null = null
+
+const TREND_DATE_LIMIT = 14
+
+echarts.use([LineChart, GridComponent, TooltipComponent, TitleComponent, CanvasRenderer])
+
+const hasTrendData = computed(() => trendPoints.value.length > 0)
 
 const hasArchiveEvents = computed(() => result.value.event_count > 0)
 
@@ -92,6 +132,247 @@ function clampPercent(value: number): number {
   }
 
   return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function clampScore(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0
+  }
+
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function clampTrendDate(value: string) {
+  if (/^\d{4}-\d{2}-\d{2}/.test(value)) {
+    return value.slice(0, 10)
+  }
+
+  return null
+}
+
+function estimatePressureScoreFromEvent(event: EventRecord): number {
+  const singleScore = event.single_analysis?.pressure_score
+
+  if (Number.isFinite(singleScore)) {
+    return clampScore(singleScore)
+  }
+
+  const severity = Number(event.severity)
+
+  if (Number.isFinite(severity)) {
+    const baseScore = ((Math.max(1, Math.min(5, severity)) - 1) / 4) * 100
+    const conflictBoost = event.has_conflict ? 10 : 0
+    const communicationReduce = event.has_communicated ? -4 : 0
+
+    return clampScore(baseScore + conflictBoost + communicationReduce)
+  }
+
+  return 44
+}
+
+function parseTrendPoints(events: EventRecord[]): TrendPoint[] {
+  const bucket: Record<string, number[]> = {}
+
+  events.forEach((event) => {
+    const date = clampTrendDate(event.event_date)
+
+    if (!date) {
+      return
+    }
+
+    const score = estimatePressureScoreFromEvent(event)
+    const existed = bucket[date]
+
+    if (existed) {
+      existed.push(score)
+    } else {
+      bucket[date] = [score]
+    }
+  })
+
+  const orderedDates = Object.keys(bucket).sort((left, right) => left.localeCompare(right))
+
+  const truncatedDates = orderedDates.slice(-TREND_DATE_LIMIT)
+
+  return truncatedDates.map((date) => {
+    const scores = bucket[date] ?? []
+    const scoreSum = scores.reduce((sum, item) => sum + item, 0)
+    const count = scores.length
+
+    if (!count) {
+      return {
+        date,
+        score: 0,
+        count: 0,
+      }
+    }
+
+    return {
+      date,
+      score: clampScore(scoreSum / count),
+      count,
+    }
+  })
+}
+
+function getCssColor(variableName: string, fallback: string) {
+  if (typeof window === 'undefined') {
+    return fallback
+  }
+
+  return window
+    .getComputedStyle(document.documentElement)
+    .getPropertyValue(variableName)
+    .trim() || fallback
+}
+
+function buildTrendChartOptions() {
+  const ink = getCssColor('--ink', '#261b1f')
+  const inkSoft = getCssColor('--ink-soft', '#6c5965')
+  const border = getCssColor('--border', '#d6ccd2')
+  const secondary = getCssColor('--secondary', '#ff8182')
+
+  if (!trendPoints.value.length) {
+    return {
+      title: {
+        left: '50%',
+        text: '暂无趋势数据',
+        textStyle: {
+          color: inkSoft,
+          fontSize: 13,
+        },
+      },
+      grid: {
+        left: 20,
+        right: 16,
+        top: 10,
+        bottom: 14,
+      },
+      xAxis: { show: false },
+      yAxis: { show: false },
+      series: [],
+    }
+  }
+
+  return {
+    grid: {
+      left: 28,
+      right: 16,
+      top: 18,
+      bottom: 24,
+      containLabel: true,
+    },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: 'rgba(255,255,255,0.95)',
+      borderColor: ink,
+      borderWidth: 2,
+      textStyle: {
+        color: ink,
+      },
+      formatter: (params: Array<{ dataIndex?: number }>) => {
+        const dataIndex = params?.[0]?.dataIndex
+        const point = typeof dataIndex === 'number' ? trendPoints.value[dataIndex] : null
+
+        if (!point) {
+          return ''
+        }
+
+        return `${point.date}<br/>平均压力：${point.score}<br/>事件数：${point.count}`
+      },
+    },
+    xAxis: {
+      type: 'category',
+      axisLabel: {
+        color: inkSoft,
+      },
+      axisLine: {
+        lineStyle: {
+          color: inkSoft,
+        },
+      },
+      axisTick: {
+        lineStyle: {
+          color: inkSoft,
+        },
+      },
+      data: trendPoints.value.map((item) => item.date),
+    },
+    yAxis: {
+      type: 'value',
+      min: 0,
+      max: 100,
+      axisLabel: {
+        color: inkSoft,
+      },
+      splitLine: {
+        lineStyle: {
+          color: border,
+        },
+      },
+    },
+    series: [
+      {
+        data: trendPoints.value.map((item) => item.score),
+        type: 'line',
+        smooth: true,
+        symbolSize: 7,
+        lineStyle: {
+          width: 3,
+        },
+        areaStyle: {
+          color: 'rgba(255, 129, 130, 0.16)',
+        },
+        itemStyle: {
+          color: secondary,
+        },
+      },
+    ],
+  }
+}
+
+function refreshTrendChart() {
+  const container = trendChartRef.value
+
+  if (!container || !isAnalysisViewActive) {
+    if (!container && trendChartInstance) {
+      disposeTrendChart()
+    }
+
+    return
+  }
+
+  if (!trendChartInstance) {
+    trendChartInstance = echarts.init(container)
+  }
+
+  trendChartInstance.setOption(buildTrendChartOptions(), true)
+}
+
+function registerTrendChartResizeListener() {
+  if (typeof window === 'undefined' || trendChartResizeHandler || !isAnalysisViewActive) {
+    return
+  }
+
+  trendChartResizeHandler = () => {
+    if (trendChartInstance) {
+      trendChartInstance.resize()
+    }
+  }
+
+  window.addEventListener('resize', trendChartResizeHandler)
+}
+
+function disposeTrendChart() {
+  if (trendChartInstance) {
+    trendChartInstance.dispose()
+    trendChartInstance = null
+  }
+
+  if (trendChartResizeHandler) {
+    window.removeEventListener('resize', trendChartResizeHandler)
+    trendChartResizeHandler = null
+  }
 }
 
 function prefersReducedMotion() {
@@ -291,6 +572,7 @@ async function loadArchiveInsightForCurrentArchive(eventCount: number) {
 
   insightStatus.value = 'loading'
   insightError.value = ''
+  trendPoints.value = []
 
   try {
     const archive = await fetchEventArchive()
@@ -299,6 +581,10 @@ async function loadArchiveInsightForCurrentArchive(eventCount: number) {
       return
     }
 
+    trendPoints.value = parseTrendPoints(archive.events)
+    await nextTick()
+    refreshTrendChart()
+    registerTrendChartResizeListener()
     await loadArchiveInsight(buildArchiveSignature(archive.events))
   } catch (error) {
     if (!isAnalysisViewActive) {
@@ -363,12 +649,32 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   isAnalysisViewActive = false
+  disposeTrendChart()
 
   if (analysisAnimationFrame) {
     window.cancelAnimationFrame(analysisAnimationFrame)
     analysisAnimationFrame = 0
   }
 })
+
+watch(
+  trendPoints,
+  () => {
+    if (!isAnalysisViewActive) {
+      return
+    }
+
+    if (!trendPoints.value.length) {
+      disposeTrendChart()
+      return
+    }
+
+    if (trendChartInstance) {
+      refreshTrendChart()
+    }
+  },
+  { deep: true },
+)
 </script>
 
 <template>
@@ -436,84 +742,99 @@ onBeforeUnmount(() => {
       <section
         v-else-if="hasArchiveEvents && !isAnalysisLoading"
         key="ready"
-        class="analysis-v2-bento"
+        class="analysis-ready-stack"
       >
-        <article
-          class="analysis-gauge-card pop-card pop-shadow page-pop-in"
-          :aria-label="`压力分数 ${result.pressure_score}/100`"
-        >
-          <span class="analysis-card-corner" aria-hidden="true"></span>
-          <h2>
-            <span class="material-symbol" aria-hidden="true">speed</span>
-            压力指数
-          </h2>
-          <div class="analysis-gauge" :style="scoreGaugeStyle">
-            <div class="analysis-gauge-core">
-              <strong>{{ animatedScorePercent }}</strong>
-              <span>/ 100</span>
-            </div>
-          </div>
-          <div class="analysis-gauge-copy">
-            <span class="risk-badge">{{ result.risk_label }}</span>
-            <p>{{ result.suggestion }}</p>
-          </div>
-        </article>
-
-        <div class="analysis-v2-side">
-          <div class="analysis-stat-row">
-            <article class="analysis-stat-card pop-card pop-shadow page-pop-in">
-              <span class="material-symbol" aria-hidden="true">folder_open</span>
-              <div>
-                <p>档案事件数</p>
-                <strong>{{ result.event_count }}</strong>
-              </div>
-            </article>
-            <article class="analysis-stat-card pop-card pop-shadow page-pop-in">
-              <span class="material-symbol" aria-hidden="true">event_upcoming</span>
-              <div>
-                <p>近 30 天事件</p>
-                <strong>{{ result.active_30d_count }}</strong>
-              </div>
-            </article>
-          </div>
-
-          <article class="analysis-source-panel pop-card pop-shadow page-pop-in">
+        <div class="analysis-v2-bento">
+          <article
+            class="analysis-gauge-card pop-card pop-shadow page-pop-in"
+            :aria-label="`压力分数 ${result.pressure_score}/100`"
+          >
+            <span class="analysis-card-corner" aria-hidden="true"></span>
             <h2>
-              <span class="material-symbol" aria-hidden="true">pie_chart</span>
-              矛盾溯源分析
+              <span class="material-symbol" aria-hidden="true">speed</span>
+              压力指数
             </h2>
-            <p v-if="sourceBreakdown.length === 0" class="analysis-source-empty">
-              暂无事件类型占比
-            </p>
-            <div v-else class="analysis-source-bars">
-              <div v-for="source in sourceBreakdown" :key="source.label" class="analysis-source-item">
+            <div class="analysis-gauge" :style="scoreGaugeStyle">
+              <div class="analysis-gauge-core">
+                <strong>{{ animatedScorePercent }}</strong>
+                <span>/ 100</span>
+              </div>
+            </div>
+            <div class="analysis-gauge-copy">
+              <span class="risk-badge">{{ result.risk_label }}</span>
+              <p>{{ result.suggestion }}</p>
+            </div>
+          </article>
+
+          <div class="analysis-v2-side">
+            <div class="analysis-stat-row">
+              <article class="analysis-stat-card pop-card pop-shadow page-pop-in">
+                <span class="material-symbol" aria-hidden="true">folder_open</span>
                 <div>
-                  <span>{{ source.label }}</span>
-                  <strong>{{ source.percent }}%</strong>
+                  <p>档案事件数</p>
+                  <strong>{{ result.event_count }}</strong>
                 </div>
-                <div class="analysis-source-track card-border">
-                  <i
-                    :class="['analysis-source-fill', `analysis-source-fill-${source.tone}`]"
-                    :style="{ width: `${source.animatedPercent}%` }"
-                  ></i>
+              </article>
+              <article class="analysis-stat-card pop-card pop-shadow page-pop-in">
+                <span class="material-symbol" aria-hidden="true">event_upcoming</span>
+                <div>
+                  <p>近 30 天事件</p>
+                  <strong>{{ result.active_30d_count }}</strong>
+                </div>
+              </article>
+            </div>
+
+            <article class="analysis-source-panel pop-card pop-shadow page-pop-in">
+              <h2>
+                <span class="material-symbol" aria-hidden="true">pie_chart</span>
+                矛盾溯源分析
+              </h2>
+              <p v-if="sourceBreakdown.length === 0" class="analysis-source-empty">
+                暂无事件类型占比
+              </p>
+              <div v-else class="analysis-source-bars">
+                <div v-for="source in sourceBreakdown" :key="source.label" class="analysis-source-item">
+                  <div>
+                    <span>{{ source.label }}</span>
+                    <strong>{{ source.percent }}%</strong>
+                  </div>
+                  <div class="analysis-source-track card-border">
+                    <i
+                      :class="['analysis-source-fill', `analysis-source-fill-${source.tone}`]"
+                      :style="{ width: `${source.animatedPercent}%` }"
+                    ></i>
+                  </div>
                 </div>
               </div>
-            </div>
-          </article>
+            </article>
 
-          <article class="analysis-signals-panel pop-card pop-shadow page-pop-in">
-            <h2>
-              <span class="material-symbol" aria-hidden="true">psychology</span>
-              情绪与趋势
-            </h2>
-            <div class="analysis-keyword-list">
-              <span v-for="keyword in result.emotion_keywords" :key="keyword">
-                {{ keyword }}
-              </span>
-            </div>
-            <p>{{ result.trend_message }}</p>
-          </article>
+            <article class="analysis-signals-panel pop-card pop-shadow page-pop-in">
+              <h2>
+                <span class="material-symbol" aria-hidden="true">psychology</span>
+                情绪与趋势
+              </h2>
+              <div class="analysis-keyword-list">
+                <span v-for="keyword in result.emotion_keywords" :key="keyword">
+                  {{ keyword }}
+                </span>
+              </div>
+              <p>{{ result.trend_message }}</p>
+            </article>
+          </div>
         </div>
+
+        <article class="analysis-trend-panel pop-card pop-shadow page-pop-in">
+          <h2>
+            <span class="material-symbol" aria-hidden="true">show_chart</span>
+            压力趋势图
+          </h2>
+          <p v-if="trendChartMeta" class="analysis-trend-meta">
+            {{ trendChartMeta.dateRange }} | 近 {{ trendChartMeta.totalCount }} 份事件，平均 {{ trendChartMeta.avgScore }}
+          </p>
+          <p v-else class="analysis-trend-meta">暂无可显示趋势点</p>
+          <div v-if="hasTrendData" ref="trendChartRef" class="analysis-trend-chart"></div>
+          <p v-else class="analysis-trend-empty">最近 14 个日期点暂无有效压力分数数据。</p>
+        </article>
       </section>
     </Transition>
 
@@ -609,3 +930,91 @@ onBeforeUnmount(() => {
     </footer>
   </main>
 </template>
+
+<style scoped>
+.analysis-ready-stack {
+  display: grid;
+}
+
+.analysis-trend-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 24px;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 28px;
+  animation: analysis-trend-in 420ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.analysis-trend-panel h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: var(--font-headline-md);
+}
+
+.analysis-trend-panel h2 .material-symbol {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  background: var(--primary-container);
+  color: #ffffff;
+  box-shadow: 2px 2px 0 0 var(--shadow-dark);
+}
+
+.analysis-trend-meta {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: var(--font-label-bold);
+  font-weight: 800;
+}
+
+.analysis-trend-chart {
+  width: 100%;
+  min-height: 250px;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  background: var(--surface-container);
+}
+
+.analysis-trend-empty {
+  display: grid;
+  align-items: center;
+  min-height: 250px;
+  margin: 0;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  background: var(--surface-container);
+  padding: 24px;
+  color: var(--ink-soft);
+  font-weight: 800;
+}
+
+@keyframes analysis-trend-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 768px) {
+  .analysis-trend-panel {
+    padding: 22px;
+  }
+
+  .analysis-trend-chart,
+  .analysis-trend-empty {
+    min-height: 220px;
+  }
+}
+</style>
