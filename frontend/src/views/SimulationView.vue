@@ -1,37 +1,30 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 
+import { useSimulationSession } from '@/composables/useSimulationSession'
 import { fetchEventArchive } from '@/data/eventArchive'
 import {
   ANALYSIS_RESULT_STORAGE_KEY,
   LAST_EVENT_STORAGE_KEY,
   ROOMMATE_PROFILES_STORAGE_KEY,
-  SIMULATION_RESULT_STORAGE_KEY,
   buildDemoSimulationResponse,
   createDefaultRoommates,
   defaultSimulationRequest,
   isAnalyzeResult,
-  mapRoommateToReviewSpeaker,
   normalizeRoommates,
   roommateAvatarOptions,
   roommatePresetLabels,
   roommatePresetOptions,
   roommatePresetTraits,
   roommateTraitLabels,
-  SimulationRequestError,
   simulationScenarios,
-  submitSimulationRequest,
   type AnalyzeResult,
   type ReviewDialogueLine,
   type RoommateAvatarKey,
   type RoommatePresetKey,
   type RoommateProfile,
   type RoommateTraits,
-  type SimulationReply,
-  type SimulationRequest,
-  type SimulationResponse,
-  type StoredSimulationResult,
 } from '@/data/week1'
 
 type RecordLike = Record<string, unknown>
@@ -59,24 +52,12 @@ const traitKeys: Array<keyof RoommateTraits> = [
   'boundary_sensitivity',
 ]
 
+const route = useRoute()
 const currentScene = ref(defaultScene)
 const customScenarios = ref<string[]>([])
 const customSceneDraft = ref('')
 const customSceneError = ref('')
 const isCustomSceneOpen = ref(false)
-const userMessage = ref('')
-const isSubmitting = ref(false)
-const submitError = ref('')
-const isDemoResult = ref(false)
-const simulationNotice = ref('')
-const safetyNote = ref('')
-const conversationMessages = ref<ReviewDialogueLine[]>([])
-const cachedConversationRoommates = ref<RoommateProfile[]>([])
-const generationStatus = ref('')
-const generationRunId = ref(0)
-const isContinuationRequestActive = ref(false)
-const activeSimulationAbortController = ref<AbortController | null>(null)
-const queuedUserMessages = ref<string[]>([])
 const savedAnalysisRiskLevel = ref<AnalyzeResult['risk_level'] | undefined>()
 const savedAnalysisSources = ref<string[]>([])
 const savedAnalysisEmotionKeywords = ref<string[]>([])
@@ -84,12 +65,6 @@ const savedAnalysisTrend = ref('')
 const savedAnalysisSuggestion = ref('')
 const savedAnalysisScore = ref<number | null>(null)
 const savedAnalysisContext = ref('')
-const storedSimulationMeta = ref('')
-const hasUserTurn = ref(false)
-const hasCompleteSimulationTurn = ref(false)
-const conversationId = ref('')
-const currentTurnId = ref('')
-const systemTurnNotice = ref('')
 
 const roommates = ref<RoommateProfile[]>(createDefaultRoommates())
 const editingIndex = ref<number | null>(null)
@@ -116,56 +91,38 @@ function getModalFocusableElements(modalRef: HTMLElement | null) {
 const archiveEventCount = ref(0)
 const archiveLoadError = ref('')
 const useEventArchive = ref(false)
-const defaultReplyChainMin = 3
-const defaultReplyChainMax = 7
-const maxReplyChainLength = 15
-const interjectionWindowMs = 900
-const hasActiveConversation = computed(() =>
-  Boolean(conversationId.value || conversationMessages.value.length > 0 || isSubmitting.value),
-)
 const scenarioButtons = computed(() => [...simulationScenarios, ...customScenarios.value])
+
+const {
+  userMessage,
+  isSubmitting,
+  submitError,
+  safetyNote,
+  conversationMessages,
+  cachedConversationRoommates,
+  generationStatus,
+  storedSimulationMeta,
+  systemTurnNotice,
+  sessionErrorState,
+  hasActiveConversation,
+  canEnterReview,
+  reviewGateMessage,
+  chatHintMessage,
+  sendMessage,
+  resetConversation,
+  retryFromExpiredSession,
+  hydrateFromSimulationCache,
+  clearSimulationCacheForScenario,
+} = useSimulationSession({
+  getScenario: () => currentScene.value,
+  getRoommates: () => roommates.value,
+  getRiskLevel: () => savedAnalysisRiskLevel.value,
+  getContext: () => buildRequestContext(),
+  getUseEventArchive: () => useEventArchive.value && archiveEventCount.value > 0,
+})
 
 function isRecord(value: unknown): value is RecordLike {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function isReviewDialogueLine(value: unknown): value is ReviewDialogueLine {
-  return (
-    isRecord(value) &&
-    typeof value.speaker === 'string' &&
-    typeof value.message === 'string' &&
-    (value.speaker === 'user' ||
-      value.speaker === 'system' ||
-      value.speaker.startsWith('roommate_'))
-  )
-}
-
-function isStoredSimulationResult(value: unknown): value is StoredSimulationResult {
-  if (!isRecord(value)) {
-    return false
-  }
-
-  const request = value.request
-  const response = value.response
-  const dialogue = value.dialogue
-
-  return (
-    isRecord(request) &&
-    typeof request.scenario === 'string' &&
-    (typeof request.user_message === 'undefined' || typeof request.user_message === 'string') &&
-    isRecord(response) &&
-    Array.isArray(response.replies) &&
-    typeof response.safety_note === 'string' &&
-    (typeof dialogue === 'undefined' ||
-      (Array.isArray(dialogue) && dialogue.every(isReviewDialogueLine)))
-  )
-}
-
-function cloneRoommate(roommate: RoommateProfile): RoommateProfile {
-  return {
-    ...roommate,
-    traits: { ...roommate.traits },
-  }
 }
 
 function saveCustomScenarios() {
@@ -473,25 +430,6 @@ function buildRequestContext() {
   return parts.join('；')
 }
 
-function setDefaultSimulationState() {
-  currentScene.value = defaultScene
-  userMessage.value = ''
-  conversationMessages.value = []
-  cachedConversationRoommates.value = []
-  generationStatus.value = ''
-  submitError.value = ''
-  isDemoResult.value = false
-  simulationNotice.value = ''
-  safetyNote.value = ''
-  storedSimulationMeta.value = ''
-  hasUserTurn.value = false
-  hasCompleteSimulationTurn.value = false
-  conversationId.value = ''
-  currentTurnId.value = ''
-  systemTurnNotice.value = ''
-  queuedUserMessages.value = []
-}
-
 const currentScenePrompt = computed(() => {
   return `当前场景：${currentScene.value}。请先输入一句你准备现实沟通时使用的话。`
 })
@@ -505,48 +443,6 @@ const archiveSwitchLabel = computed(() => {
   }
 
   return useEventArchive.value ? '已接入事件档案' : '接入事件档案'
-})
-const canEnterReview = computed(() =>
-  Boolean(
-    conversationId.value &&
-      hasUserTurn.value &&
-      hasCompleteSimulationTurn.value &&
-      !isDemoResult.value &&
-      !isSubmitting.value &&
-      queuedUserMessages.value.length === 0,
-  ),
-)
-const reviewGateMessage = computed(() => {
-  if (canEnterReview.value) {
-    return '已有本轮模拟记录，可生成复盘报告。'
-  }
-  if (queuedUserMessages.value.length > 0) {
-    return `还有 ${queuedUserMessages.value.length} 条待发送表达，请等待当前回复完成。`
-  }
-  if (isSubmitting.value) {
-    return 'AI 仍在逐条回应，请稍候再生成复盘。'
-  }
-
-  return '请先完成一次模拟对话，再进入复盘。'
-})
-const chatHintMessage = computed(() => {
-  if (queuedUserMessages.value.length > 0) {
-    return `已排队 ${queuedUserMessages.value.length} 条表达，当前 AI 回复完成后会继续发送。`
-  }
-  if (isSubmitting.value) {
-    return generationStatus.value || 'AI 正在逐条生成舍友回复。'
-  }
-  if (isDemoResult.value && simulationNotice.value) {
-    return `${storedSimulationMeta.value || '演示数据'}：${simulationNotice.value}`
-  }
-  if (simulationNotice.value) {
-    return simulationNotice.value
-  }
-  if (!storedSimulationMeta.value) {
-    return '演示建议：先从“我感受到了……”开始表达，并给出可执行边界。'
-  }
-
-  return '可以继续输入你的下一句，AI 会基于当前对话继续回应。'
 })
 
 function loadAnalysisContext() {
@@ -614,51 +510,46 @@ async function loadArchiveState() {
   }
 }
 
-function hydrateFromSimulationCache() {
-  try {
-    const raw = localStorage.getItem(SIMULATION_RESULT_STORAGE_KEY)
-
-    if (!raw) {
-      return
-    }
-
-    const parsed = JSON.parse(raw) as unknown
-
-    if (!isStoredSimulationResult(parsed)) {
-      return
-    }
-
-    if (parsed.response.is_demo) {
-      localStorage.removeItem(SIMULATION_RESULT_STORAGE_KEY)
-      return
-    }
-
-    const cachedScene = parsed.request.scenario || defaultScene
-    currentScene.value = scenarioButtons.value.includes(cachedScene) ? cachedScene : defaultScene
-    userMessage.value = parsed.request.user_message || ''
-    conversationMessages.value = parsed.dialogue ? [...parsed.dialogue] : []
-    cachedConversationRoommates.value = Array.isArray(parsed.request.roommates)
-      ? normalizeRoommates(parsed.request.roommates)
-      : []
-    isDemoResult.value = parsed.response.is_demo
-    simulationNotice.value = parsed.response.is_demo
-      ? parsed.response.demo_notice
-      : parsed.response.archive_context_used && parsed.response.archive_context_summary
-        ? `已参考事件档案：${parsed.response.archive_context_summary}`
-        : ''
-    safetyNote.value = parsed.response.is_demo ? parsed.response.safety_note : ''
-    storedSimulationMeta.value = parsed.response.is_demo ? '演示数据' : '已返回'
-    conversationId.value = parsed.response.conversation_id || parsed.request.conversation_id || ''
-    currentTurnId.value = parsed.request.turn_id || ''
-    hasUserTurn.value = conversationMessages.value.some((line) => line.speaker === 'user')
-    hasCompleteSimulationTurn.value = Boolean(conversationId.value && hasUserTurn.value)
-    systemTurnNotice.value =
-      parsed.response.replies.length === 0 && hasUserTurn.value
-        ? '这轮舍友暂时没有回应，可以继续补充你的表达。'
-        : ''
-  } catch {
-    // ignore malformed simulation cache
+function firstQueryValue(value: unknown) {
+  if (Array.isArray(value)) {
+    return typeof value[0] === 'string' ? value[0] : ''
   }
+
+  return typeof value === 'string' ? value : ''
+}
+
+function applyCachedScenario(scene?: string) {
+  if (!scene) {
+    return
+  }
+
+  currentScene.value = scenarioButtons.value.includes(scene) ? scene : defaultScene
+}
+
+function applyPrefillScenario(scene: string) {
+  const normalized = scene.trim()
+  if (!normalized) {
+    return
+  }
+
+  if (!scenarioButtons.value.includes(normalized) && normalized.length <= 40) {
+    customScenarios.value = [...customScenarios.value, normalized].slice(-8)
+    saveCustomScenarios()
+  }
+
+  currentScene.value = normalized
+}
+
+function applyPracticePrefill() {
+  const practice = firstQueryValue(route.query.practice).trim()
+  if (!practice) {
+    return
+  }
+
+  const scenario = firstQueryValue(route.query.scenario)
+  resetConversation()
+  applyPrefillScenario(scenario)
+  userMessage.value = practice
 }
 
 onMounted(() => {
@@ -666,7 +557,9 @@ onMounted(() => {
   loadCustomScenarios()
   loadAnalysisContext()
   loadLastEventHint()
-  hydrateFromSimulationCache()
+  const hydrated = hydrateFromSimulationCache()
+  applyCachedScenario(hydrated.scenario)
+  applyPracticePrefill()
   void loadArchiveState()
 })
 
@@ -711,59 +604,6 @@ function messageClass(speaker: ReviewDialogueLine['speaker']) {
   return 'conversation-message-roommate'
 }
 
-function resetGeneratingState() {
-  generationStatus.value = ''
-}
-
-function createReplyChainTarget() {
-  const span = defaultReplyChainMax - defaultReplyChainMin + 1
-  return defaultReplyChainMin + Math.floor(Math.random() * span)
-}
-
-function appendUserMessage(message: string) {
-  conversationMessages.value = [
-    ...conversationMessages.value,
-    {
-      speaker: 'user',
-      message,
-    },
-  ]
-  hasUserTurn.value = true
-}
-
-function createTurnId() {
-  return `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-}
-
-async function appendReplyWithDelay(reply: SimulationReply, index: number, runId: number) {
-  generationStatus.value = `正在生成${reply.roommate.replace(/\s+/g, ' ')} 的回复`
-
-  await new Promise((resolve) => window.setTimeout(resolve, 520 * index))
-
-  if (runId !== generationRunId.value) {
-    return
-  }
-
-  conversationMessages.value = [
-    ...conversationMessages.value,
-    {
-      speaker: mapRoommateToReviewSpeaker(reply.roommate, reply.roommate_id),
-      message: reply.message,
-    },
-  ]
-}
-
-function buildSingleReplyContext(isContinuation: boolean, replyCount: number) {
-  const baseContext = buildRequestContext()
-  const replyLimitHint =
-    '本次只生成 1 条虚拟舍友回复；不要一次性输出完整一轮，前端会在需要时继续请求下一条。'
-  const continuationHint = isContinuation
-    ? `这是同一 conversation_id 的 continuation 请求，请基于已有短期记忆判断下一位需要回应的舍友；当前已连续返回 ${replyCount} 条。`
-    : '这是用户刚发送的新表达，请重新规划下一位需要回应的舍友。'
-
-  return `${baseContext}；${replyLimitHint}；${continuationHint}`
-}
-
 function selectScenario(scene: string) {
   currentScene.value = scene
 }
@@ -780,275 +620,14 @@ function deleteCustomScenario(scene: string) {
     customSceneDraft.value = ''
   }
   customSceneError.value = ''
-
-  try {
-    const raw = localStorage.getItem(SIMULATION_RESULT_STORAGE_KEY)
-    const parsed = raw ? (JSON.parse(raw) as unknown) : null
-    if (isStoredSimulationResult(parsed) && parsed.request.scenario === scene) {
-      localStorage.removeItem(SIMULATION_RESULT_STORAGE_KEY)
-    }
-  } catch {
-    // ignore malformed local cache
-  }
+  clearSimulationCacheForScenario(scene)
 
   if (wasCurrentScene) {
+    currentScene.value = defaultScene
     resetConversation()
   }
 }
 
-function applyResultMeta(response: SimulationResponse) {
-  isDemoResult.value = response.is_demo
-  simulationNotice.value = response.is_demo
-    ? response.demo_notice
-    : response.archive_context_used && response.archive_context_summary
-      ? `已参考事件档案：${response.archive_context_summary}`
-      : ''
-  safetyNote.value = response.is_demo ? response.safety_note : ''
-  storedSimulationMeta.value = response.is_demo ? '演示数据' : '已返回'
-  conversationId.value = response.conversation_id
-  hasCompleteSimulationTurn.value = true
-  systemTurnNotice.value =
-    response.replies.length === 0 ? '这轮舍友暂时没有回应，可以继续补充你的表达。' : ''
-}
-
-function buildSimulationRequest(message: string, isContinuation: boolean, replyCount: number) {
-  const request: SimulationRequest = {
-    conversation_id: conversationId.value || undefined,
-    turn_id: currentTurnId.value || undefined,
-    scenario: currentScene.value,
-    risk_level: savedAnalysisRiskLevel.value,
-    context: buildSingleReplyContext(isContinuation, replyCount),
-    roommates: roommates.value.map(cloneRoommate),
-    use_event_archive: useEventArchive.value && archiveEventCount.value > 0,
-    max_replies: 1,
-    is_continuation: isContinuation,
-  }
-
-  if (!isContinuation) {
-    request.user_message = message
-  }
-
-  return request
-}
-
-function persistSimulationState(request: SimulationRequest, response: SimulationResponse) {
-  try {
-    localStorage.setItem(
-      SIMULATION_RESULT_STORAGE_KEY,
-      JSON.stringify({
-        request: {
-          ...request,
-          conversation_id: response.conversation_id,
-        },
-        response,
-        dialogue: conversationMessages.value,
-      }),
-    )
-  } catch {
-    // ignore write failures
-  }
-}
-
-async function requestSingleAiReply(
-  message: string,
-  isContinuation: boolean,
-  replyCount: number,
-  runId: number,
-) {
-  const request = buildSimulationRequest(message, isContinuation, replyCount)
-  generationStatus.value = isContinuation ? '正在判断下一条回应' : '正在规划舍友回应'
-  const controller = new AbortController()
-  activeSimulationAbortController.value = controller
-  isContinuationRequestActive.value = isContinuation
-
-  let response: SimulationResponse
-  try {
-    response = await submitSimulationRequest(request, controller.signal)
-  } catch (error) {
-    if (
-      error instanceof SimulationRequestError &&
-      !isContinuation &&
-      Boolean(request.conversation_id) &&
-      error.message.includes('未找到对应的模拟对话')
-    ) {
-      conversationId.value = ''
-      currentTurnId.value = createTurnId()
-      const retryRequest = buildSimulationRequest(message, false, 0)
-      response = await submitSimulationRequest(retryRequest, controller.signal)
-      request.conversation_id = retryRequest.conversation_id
-      request.turn_id = retryRequest.turn_id
-    } else {
-      throw error
-    }
-  } finally {
-    if (activeSimulationAbortController.value === controller) {
-      activeSimulationAbortController.value = null
-      isContinuationRequestActive.value = false
-    }
-  }
-
-  if (runId !== generationRunId.value) {
-    return null
-  }
-
-  const reply = response.replies[0]
-  const oneReplyResponse: SimulationResponse = {
-    ...response,
-    replies: reply ? [reply] : [],
-  }
-
-  if (reply) {
-    await appendReplyWithDelay(reply, 0, runId)
-  }
-
-  applyResultMeta(oneReplyResponse)
-  persistSimulationState(request, oneReplyResponse)
-  return oneReplyResponse
-}
-
-async function waitForInterjectionWindow(runId: number) {
-  generationStatus.value = '可以插入你的下一句，稍后继续判断舍友回应'
-  await new Promise((resolve) => window.setTimeout(resolve, interjectionWindowMs))
-  return runId === generationRunId.value
-}
-
-async function runAiReplyLoop(firstMessage: string) {
-  const runId = generationRunId.value + 1
-  generationRunId.value = runId
-  currentTurnId.value = createTurnId()
-  isSubmitting.value = true
-  hasCompleteSimulationTurn.value = false
-  let nextMessage = firstMessage
-  let isContinuation = false
-  let replyCount = 0
-  let targetReplyCount = createReplyChainTarget()
-
-  try {
-    while (runId === generationRunId.value && replyCount < maxReplyChainLength) {
-      const response = await requestSingleAiReply(nextMessage, isContinuation, replyCount, runId)
-      if (!response) {
-        return
-      }
-
-      const hasReply = response.replies.length > 0
-      if (hasReply) {
-        replyCount += response.replies.length
-      }
-
-      let queuedMessage = queuedUserMessages.value.shift()
-      if (queuedMessage) {
-        appendUserMessage(queuedMessage)
-        hasCompleteSimulationTurn.value = false
-        systemTurnNotice.value =
-          queuedUserMessages.value.length > 0
-            ? `还有 ${queuedUserMessages.value.length} 条表达在队列中。`
-            : ''
-        currentTurnId.value = createTurnId()
-        nextMessage = queuedMessage
-        isContinuation = false
-        replyCount = 0
-        targetReplyCount = createReplyChainTarget()
-        continue
-      }
-
-      if (response.is_demo) {
-        return
-      }
-
-      if (!hasReply) {
-        systemTurnNotice.value = '这轮舍友暂时没有回应，可以继续补充你的表达。'
-        return
-      }
-
-      if (replyCount >= targetReplyCount) {
-        systemTurnNotice.value = ''
-        return
-      }
-
-      if (!(await waitForInterjectionWindow(runId))) {
-        return
-      }
-
-      queuedMessage = queuedUserMessages.value.shift()
-      if (queuedMessage) {
-        appendUserMessage(queuedMessage)
-        hasCompleteSimulationTurn.value = false
-        systemTurnNotice.value =
-          queuedUserMessages.value.length > 0
-            ? `还有 ${queuedUserMessages.value.length} 条表达在队列中。`
-            : ''
-        currentTurnId.value = createTurnId()
-        nextMessage = queuedMessage
-        isContinuation = false
-        replyCount = 0
-        targetReplyCount = createReplyChainTarget()
-        continue
-      }
-
-      nextMessage = ''
-      isContinuation = true
-    }
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError' && runId !== generationRunId.value) {
-      return
-    }
-
-    submitError.value =
-      error instanceof Error && error.message
-        ? error.message
-        : '实时回复中断，为避免重复提交，请直接继续输入或重置后重试。'
-  } finally {
-    if (runId === generationRunId.value) {
-      resetGeneratingState()
-      isSubmitting.value = false
-    }
-  }
-}
-
-async function sendMessage() {
-  const message = userMessage.value.trim()
-
-  if (!message) {
-    submitError.value = '请输入你的回复后再发送'
-    return
-  }
-
-  submitError.value = ''
-  userMessage.value = ''
-
-  if (isSubmitting.value) {
-    if (isContinuationRequestActive.value) {
-      activeSimulationAbortController.value?.abort()
-      generationRunId.value += 1
-      isContinuationRequestActive.value = false
-      activeSimulationAbortController.value = null
-      appendUserMessage(message)
-      systemTurnNotice.value = ''
-      void runAiReplyLoop(message)
-      return
-    }
-
-    queuedUserMessages.value = [...queuedUserMessages.value, message]
-    systemTurnNotice.value = `已加入待发送队列（${queuedUserMessages.value.length} 条）。`
-    return
-  }
-
-  systemTurnNotice.value = ''
-  appendUserMessage(message)
-  void runAiReplyLoop(message)
-}
-
-function resetConversation() {
-  generationRunId.value += 1
-  isSubmitting.value = false
-  setDefaultSimulationState()
-
-  try {
-    localStorage.removeItem(SIMULATION_RESULT_STORAGE_KEY)
-  } catch {
-    // ignore write failures
-  }
-}
 </script>
 
 <template>
@@ -1200,7 +779,7 @@ function resetConversation() {
               {{ archiveSwitchLabel }}
             </button>
           </div>
-          <button class="primary-action pop-shadow" type="button" @click="resetConversation">
+          <button class="primary-action pop-shadow" type="button" @click="resetConversation()">
             <span class="material-symbol" aria-hidden="true">refresh</span>
             重置
           </button>
@@ -1213,6 +792,24 @@ function resetConversation() {
           <p v-if="archiveLoadError" class="chat-system archive-system-note card-border">
             {{ archiveLoadError }}
           </p>
+
+          <Transition name="chat-state">
+            <section
+              v-if="sessionErrorState === 'expired'"
+              class="simulation-session-error pop-card pop-shadow"
+            >
+              <span class="material-symbol" aria-hidden="true">sync_problem</span>
+              <h2>会话已失效</h2>
+              <p>当前会话无法继续，请一键重新开始后再发送。</p>
+              <button
+                class="primary-action pop-shadow"
+                type="button"
+                @click="retryFromExpiredSession(userMessage)"
+              >
+                重新开始
+              </button>
+            </section>
+          </Transition>
 
           <Transition name="chat-state" mode="out-in">
             <TransitionGroup
@@ -1482,6 +1079,67 @@ function resetConversation() {
   margin: 0;
   color: var(--ink-soft);
   font-size: 14px;
+}
+
+.simulation-session-error {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  border: 2px solid var(--ink);
+  border-radius: 16px;
+  padding: 18px;
+  background: var(--surface);
+  text-align: center;
+  animation: session-error-pop 260ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.simulation-session-error > .material-symbol {
+  display: inline-flex;
+  width: 42px;
+  height: 42px;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  background: var(--secondary-soft);
+  color: var(--primary);
+  box-shadow: 2px 2px 0 0 var(--shadow-dark);
+  font-size: 1.35rem;
+}
+
+.simulation-session-error h2,
+.simulation-session-error p {
+  margin: 0;
+}
+
+.simulation-session-error h2 {
+  font-size: 1.08rem;
+}
+
+.simulation-session-error p {
+  color: var(--ink-soft);
+  font-weight: 700;
+}
+
+.simulation-session-error .primary-action {
+  min-height: 42px;
+  border-radius: 999px;
+  padding: 0 18px;
+}
+
+.simulation-session-error .primary-action:hover:not(:disabled) {
+  transform: translateY(-2px) rotate(-1deg);
+}
+
+@keyframes session-error-pop {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .chip-text {

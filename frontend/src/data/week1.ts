@@ -128,11 +128,15 @@ export interface SimulationStreamHandlers {
 
 export class SimulationStreamRequestError extends Error {
   recoverable: boolean
+  status: number | null
+  detail: string
 
-  constructor(message: string, recoverable: boolean) {
+  constructor(message: string, recoverable = false, status: number | null = null, detail = message) {
     super(message)
     this.name = 'SimulationStreamRequestError'
     this.recoverable = recoverable
+    this.status = status
+    this.detail = detail
   }
 }
 
@@ -1169,6 +1173,7 @@ export async function submitSimulationRequest(
 export async function submitSimulationStreamRequest(
   payload: SimulationRequest,
   handlers: SimulationStreamHandlers = {},
+  signal?: AbortSignal,
 ): Promise<SimulationResponse> {
   const response = await fetch('/api/simulate/stream', {
     method: 'POST',
@@ -1176,6 +1181,7 @@ export async function submitSimulationStreamRequest(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(payload),
+    signal,
   })
 
   if (!response.ok) {
@@ -1184,13 +1190,18 @@ export async function submitSimulationStreamRequest(
       const raw = (await response.json()) as unknown
       if (isRecord(raw) && typeof raw.detail === 'string') {
         detail = raw.detail
+      } else if (isRecord(raw) && typeof raw.detail !== 'undefined') {
+        detail = JSON.stringify(raw.detail)
       }
     } catch {
       // Ignore malformed error bodies; the status code is still enough context.
     }
+    const message = detail || `实时回复请求失败（接口返回 ${response.status}）`
     throw new SimulationStreamRequestError(
-      detail || `实时回复请求失败（接口返回 ${response.status}）`,
-      false,
+      message,
+      response.status >= 500 || response.status === 429,
+      response.status,
+      detail || message,
     )
   }
 
@@ -1202,20 +1213,47 @@ export async function submitSimulationStreamRequest(
   const decoder = new TextDecoder()
   let buffer = ''
   let finalResponse: SimulationResponse | null = null
+  let completedStream = false
 
-  while (true) {
-    const { value, done } = await reader.read()
-    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? ''
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
 
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed) {
-        continue
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) {
+          continue
+        }
+
+        const event = JSON.parse(trimmed) as unknown
+        if (!isSimulationStreamEvent(event)) {
+          throw new Error('stream event shape mismatch')
+        }
+
+        if (event.type === 'reply') {
+          handlers.onReply?.(event.reply)
+        }
+
+        if (event.type === 'start') {
+          handlers.onStart?.(event.conversation_id)
+        }
+
+        if (event.type === 'final') {
+          finalResponse = normalizeSimulationResponse(event.response)
+        }
       }
 
-      const event = JSON.parse(trimmed) as unknown
+      if (done) {
+        break
+      }
+    }
+
+    const tail = buffer.trim()
+    if (tail) {
+      const event = JSON.parse(tail) as unknown
       if (!isSimulationStreamEvent(event)) {
         throw new Error('stream event shape mismatch')
       }
@@ -1232,29 +1270,14 @@ export async function submitSimulationStreamRequest(
         finalResponse = normalizeSimulationResponse(event.response)
       }
     }
-
-    if (done) {
-      break
-    }
-  }
-
-  const tail = buffer.trim()
-  if (tail) {
-    const event = JSON.parse(tail) as unknown
-    if (!isSimulationStreamEvent(event)) {
-      throw new Error('stream event shape mismatch')
-    }
-
-    if (event.type === 'reply') {
-      handlers.onReply?.(event.reply)
-    }
-
-    if (event.type === 'start') {
-      handlers.onStart?.(event.conversation_id)
-    }
-
-    if (event.type === 'final') {
-      finalResponse = normalizeSimulationResponse(event.response)
+    completedStream = true
+  } finally {
+    if (signal?.aborted || !completedStream) {
+      try {
+        await reader.cancel()
+      } catch {
+        // Preserve the original stream read/parse/abort error.
+      }
     }
   }
 
