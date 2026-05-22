@@ -375,6 +375,7 @@ requireReviewDialogueListModalContract()
 requireIncludes('src/data/week1.ts', [
   'ReviewPerformanceScores',
   'CommunicationPlan',
+  'ReviewRequestError',
   'isReviewPerformanceScores',
   'isCommunicationPlan',
   'performance_scores:',
@@ -437,6 +438,11 @@ requireMatches('src/data/week1.ts', [
     label: 'normalizeReviewResponse preserves backend safety_note',
     pattern:
       /function normalizeReviewResponse[\s\S]*?safety_note:\s*[\s\S]*?typeof raw\.safety_note === 'string'\s*\?\s*raw\.safety_note\s*:/,
+  },
+  {
+    label: 'submitReviewRequest rethrows client-state 400 errors instead of demo fallback',
+    pattern:
+      /if \(!response\.ok && response\.status === 400\) \{[\s\S]*?throw new ReviewRequestError[\s\S]*?if \(error instanceof ReviewRequestError\) \{[\s\S]*?throw error/,
   },
 ])
 

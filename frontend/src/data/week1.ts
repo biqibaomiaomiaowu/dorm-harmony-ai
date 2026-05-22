@@ -147,6 +147,13 @@ export class SimulationRequestError extends Error {
   }
 }
 
+export class ReviewRequestError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ReviewRequestError'
+  }
+}
+
 export interface StoredSimulationResult {
   request: SimulationRequest
   response: SimulationResponse
@@ -1371,9 +1378,9 @@ export async function submitReviewRequest(payload: ReviewRequest): Promise<Revie
           detail = raw.detail
         }
       } catch {
-        // malformed error bodies still map to a recoverable memory-missing message.
+        // malformed error bodies still map to a recoverable client-state message.
       }
-      throw new Error(detail || '未找到后端对话记忆，请回到模拟页重新演练。')
+      throw new ReviewRequestError(detail || '复盘请求状态异常，请先完成一次模拟对话。')
     }
 
     if (!response.ok) {
@@ -1388,11 +1395,11 @@ export async function submitReviewRequest(payload: ReviewRequest): Promise<Revie
 
     return normalizeReviewResponse(raw)
   } catch (error) {
-    if (error instanceof Error) {
-      if (error.message.includes('后端对话记忆') || error.message.includes('重新演练')) {
-        throw error
-      }
+    if (error instanceof ReviewRequestError) {
+      throw error
+    }
 
+    if (error instanceof Error) {
       return buildDemoReviewResponse(`请求失败：${error.message}`, payload)
     }
 
