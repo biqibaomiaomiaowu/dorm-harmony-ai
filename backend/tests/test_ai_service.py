@@ -1,5 +1,6 @@
 from datetime import date, datetime
 import sys
+from threading import Event, Thread
 import types
 
 import pytest
@@ -790,6 +791,133 @@ def test_service_does_not_write_user_message_when_generation_fails():
 
     dialogue = memory.get_dialogue(conversation_id)
     assert [message.message for message in dialogue] == ["第一轮先沟通。"]
+
+
+def test_stale_user_turn_does_not_write_after_newer_turn_is_marked():
+    memory = ai_service.ConversationMemory()
+    conversation_id = memory.start_conversation()
+
+    class NewerTurnRunner(ScriptedMultiAgentRunner):
+        def generate_roommate_reply(
+            self,
+            request,
+            history,
+            archive_context_summary,
+            same_turn_replies,
+            roommate,
+        ):
+            memory.mark_latest_turn(conversation_id, "turn-newer")
+            return super().generate_roommate_reply(
+                request,
+                history,
+                archive_context_summary,
+                same_turn_replies,
+                roommate,
+            )
+
+    service = DormHarmonyAIService(runner=NewerTurnRunner(), memory=memory)
+
+    response = service.simulate(
+        SimulateRequest(
+            conversation_id=conversation_id,
+            turn_id="turn-old",
+            scenario="噪音冲突",
+            user_message="旧的一轮表达不应再写入。",
+        )
+    )
+
+    assert response.replies == []
+    assert memory.get_dialogue(conversation_id) == []
+    assert memory.is_latest_turn(conversation_id, "turn-newer") is True
+
+
+def test_new_user_turn_marks_latest_while_old_continuation_is_generating():
+    memory = ai_service.ConversationMemory()
+    conversation_id = memory.start_conversation()
+    memory.mark_latest_turn(conversation_id, "turn-old")
+    memory.append_user_message(conversation_id, "先说一轮。")
+    generation_started = Event()
+    allow_old_generation_to_finish = Event()
+    old_result: dict[str, object] = {}
+    new_result: dict[str, object] = {}
+
+    class BlockingRunner:
+        def plan_simulation_replies(self, request, history, archive_context_summary=None):
+            return ai_service.SpeakerPlanResponse(
+                replies=[ai_service.SpeakerPlanItem(roommate_id="roommate_a")]
+            )
+
+        def generate_roommate_reply(
+            self,
+            request,
+            history,
+            archive_context_summary,
+            same_turn_replies,
+            roommate,
+        ):
+            if request.is_continuation:
+                generation_started.set()
+                assert allow_old_generation_to_finish.wait(timeout=2)
+                return RoommateReply(
+                    roommate_id="roommate_a",
+                    roommate="舍友 A",
+                    personality="直接型",
+                    message="旧 continuation 回复不应写入。",
+                )
+
+            return RoommateReply(
+                roommate_id="roommate_a",
+                roommate="舍友 A",
+                personality="直接型",
+                message="新一轮回复应写入。",
+            )
+
+    service = DormHarmonyAIService(runner=BlockingRunner(), memory=memory)
+
+    def run_old_continuation():
+        old_result["response"] = service.simulate(
+            SimulateRequest(
+                conversation_id=conversation_id,
+                turn_id="turn-old",
+                scenario="噪音冲突",
+                is_continuation=True,
+                max_replies=1,
+            )
+        )
+
+    def run_new_turn():
+        new_result["response"] = service.simulate(
+            SimulateRequest(
+                conversation_id=conversation_id,
+                turn_id="turn-new",
+                scenario="噪音冲突",
+                user_message="这是新的一轮表达。",
+                max_replies=1,
+            )
+        )
+
+    old_thread = Thread(target=run_old_continuation)
+    old_thread.start()
+    assert generation_started.wait(timeout=2)
+
+    new_thread = Thread(target=run_new_turn)
+    new_thread.start()
+    allow_old_generation_to_finish.set()
+    old_thread.join(timeout=2)
+    new_thread.join(timeout=2)
+
+    assert not old_thread.is_alive()
+    assert not new_thread.is_alive()
+    assert isinstance(old_result["response"], SimulateResponse)
+    assert isinstance(new_result["response"], SimulateResponse)
+    assert old_result["response"].replies == []
+    assert [reply.message for reply in new_result["response"].replies] == ["新一轮回复应写入。"]
+    assert [line.message for line in memory.get_dialogue(conversation_id)] == [
+        "先说一轮。",
+        "这是新的一轮表达。",
+        "新一轮回复应写入。",
+    ]
+    assert memory.is_latest_turn(conversation_id, "turn-new") is True
 
 
 def test_continuation_does_not_append_user_message_and_respects_max_replies():

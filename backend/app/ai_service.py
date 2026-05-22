@@ -143,6 +143,8 @@ _REVIEW_SUGGESTED_MESSAGE_MAX_LENGTH = 500
 _REVIEW_ISSUE_MAX_LENGTH = 300
 _REVIEW_REASON_MAX_LENGTH = 300
 logger = logging.getLogger(__name__)
+_CONVERSATION_OPERATION_LOCKS_GUARD = RLock()
+_CONVERSATION_OPERATION_LOCKS: dict[str, RLock] = {}
 _IMPROVABLE_USER_MESSAGE_KEYWORDS = (
     "傻",
     "闭嘴",
@@ -545,6 +547,28 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _get_conversation_operation_lock(conversation_id: str) -> RLock:
+    """按会话 id 复用操作锁，串行化一次模拟的读、生成和写入。"""
+    with _CONVERSATION_OPERATION_LOCKS_GUARD:
+        if conversation_id not in _CONVERSATION_OPERATION_LOCKS:
+            _CONVERSATION_OPERATION_LOCKS[conversation_id] = RLock()
+        return _CONVERSATION_OPERATION_LOCKS[conversation_id]
+
+
+def _empty_simulate_response(
+    conversation_id: str,
+    archive_context_summary: str | None,
+) -> SimulateResponse:
+    """返回不写入任何新消息的空模拟结果。"""
+    return SimulateResponse(
+        conversation_id=conversation_id,
+        replies=[],
+        archive_context_used=archive_context_summary is not None,
+        archive_context_summary=archive_context_summary,
+        safety_note=SIMULATE_SAFETY_NOTE,
+    )
+
+
 def _message_to_dialogue(message: BaseMessage) -> DialogueMessage:
     """把 LangChain 消息转为复盘使用的 DialogueMessage。"""
     if isinstance(message, HumanMessage):
@@ -782,6 +806,22 @@ class DormHarmonyAIService:
         request: SimulateRequest,
         archive_context_summary: str | None = None,
     ) -> SimulateResponse:
+        """串行化同一会话的一轮模拟，避免并发请求交错写入。"""
+        if request.conversation_id:
+            if not self._memory.has_conversation(request.conversation_id):
+                raise ConversationMemoryNotFoundError(_MEMORY_NOT_FOUND_MESSAGE)
+            if not request.is_continuation:
+                self._memory.mark_latest_turn(request.conversation_id, request.turn_id)
+            with _get_conversation_operation_lock(request.conversation_id):
+                return self._simulate_with_memory_locked(request, archive_context_summary)
+
+        return self._simulate_with_memory_locked(request, archive_context_summary)
+
+    def _simulate_with_memory_locked(
+        self,
+        request: SimulateRequest,
+        archive_context_summary: str | None = None,
+    ) -> SimulateResponse:
         """使用短期记忆和多智能体 runner 完成一轮模拟。"""
         conversation_id = self._resolve_conversation_id(request)
         if not request.is_continuation:
@@ -837,17 +877,11 @@ class DormHarmonyAIService:
             reply = _normalize_roommate_reply(reply, roommate_by_id)
             same_turn_replies.append(reply)
 
-        if request.is_continuation and not self._memory.is_latest_turn(
+        if request.turn_id and not self._memory.is_latest_turn(
             conversation_id,
             request.turn_id,
         ):
-            return SimulateResponse(
-                conversation_id=conversation_id,
-                replies=[],
-                archive_context_used=archive_context_summary is not None,
-                archive_context_summary=archive_context_summary,
-                safety_note=SIMULATE_SAFETY_NOTE,
-            )
+            return _empty_simulate_response(conversation_id, archive_context_summary)
 
         if legacy_dialogue:
             self._migrate_legacy_dialogue(conversation_id, legacy_dialogue, request.roommates)
