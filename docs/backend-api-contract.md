@@ -1,6 +1,6 @@
 # 后端 API 契约
 
-本文档记录当前后端已实现接口。运行时 AI 接口已接入 FastAPI + LangChain + DeepSeek 服务层，已提供健康检查、压力分析、事件档案、沟通模拟、沟通复盘和事件档案 AI 心晴见解接口；第三阶段已补充本地 Vite 代理、FastAPI CORS 和复盘字段兼容。
+本文档记录当前后端已实现接口。运行时 AI 接口已接入 FastAPI + LangChain + DeepSeek 服务层，已提供健康检查、压力分析、SQLite 事件档案、沟通模拟、沟通复盘、复盘历史和事件档案 AI 心晴见解接口；第三阶段之后已补充本地 Vite 代理、FastAPI CORS、LangGraph SQLite 会话记忆、真实流式模拟接入和复盘字段兼容。
 
 ## 安全边界
 
@@ -33,6 +33,8 @@ npm run dev
 ```bash
 export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 ```
+
+运行时数据默认保存在 `backend/.runtime/dorm_harmony.sqlite3`，可通过 `DORM_HARMONY_SQLITE_PATH` 覆盖。该变量按后端进程当前工作目录解析。该 SQLite 文件包含事件档案、LangGraph 会话记忆和复盘历史。旧版 `DORM_HARMONY_EVENT_STORE_PATH` 仅用于首次导入旧 JSON 事件档案。
 
 ## 已实现接口
 
@@ -122,11 +124,11 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 }
 ```
 
-## v2 事件档案接口
+## V3 事件档案接口
 
 ### POST /api/events
 
-状态：已实现。保存一条事件档案记录，后端同步调用 `analyze_pressure()` 生成单条事件压力快照。
+状态：已实现。保存一条事件档案记录到 SQLite，后端同步调用 `analyze_pressure()` 生成单条事件压力快照。
 
 请求字段：继承 `POST /api/analyze` 全部字段，并增加：
 
@@ -166,7 +168,7 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 
 ### GET /api/events
 
-状态：已实现。返回当前本地 JSON 事件档案，不调用 AI 服务。
+状态：已实现。返回当前本地 SQLite 事件档案，不调用 AI 服务。
 
 响应字段：
 
@@ -255,19 +257,19 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 
 说明：`发生频率较高`、`尚未有效沟通`、`已出现争吵或冷战` 仍会通过单条事件压力分影响贡献值，但不会作为 `source_breakdown` 的独立类别返回。
 
-## AI 与 V2 模拟/复盘接口
+## AI 与 V3 模拟/复盘接口
 
-以下内容为当前已实现 AI 接口。`/api/simulate`、`/api/simulate/stream`、`/api/events/insight` 与 `/api/review` 运行时通过 LangChain 调用 DeepSeek 官方 OpenAI 兼容 API，并返回便于前端展示的结构化响应。
+以下内容为当前已实现 AI 接口。`/api/simulate`、`/api/simulate/stream`、`/api/events/insight` 与 `/api/review` 运行时通过 LangChain 调用 DeepSeek 官方 OpenAI 兼容 API，并返回便于前端展示的结构化响应。模拟与复盘可通过 LangGraph SQLite 会话记忆读取同一 `conversation_id` 的历史对话。
 
 ### POST /api/simulate
 
-状态：已实现，V2 已扩展为动态舍友画像、事件档案上下文、短期会话记忆和多轮模拟。运行时通过 LangChain 调用 DeepSeek `deepseek-v4-flash`；缺少 `DEEPSEEK_API_KEY` 且没有兼容的 `OPENAI_API_KEY` 时返回 `503`。
+状态：已实现，V3 已扩展为动态舍友画像、事件档案上下文、LangGraph SQLite 会话记忆和多轮模拟。运行时通过 LangChain 调用 DeepSeek `deepseek-v4-flash`；缺少 `DEEPSEEK_API_KEY` 且没有兼容的 `OPENAI_API_KEY` 时返回 `503`。
 
 请求字段：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `conversation_id` | string | 可选，后端短期会话 id；继续已有会话时传入 |
+| `conversation_id` | string | 可选，后端 SQLite 会话 id；继续已有会话时传入 |
 | `turn_id` | string | 可选，前端生成的用户回合 id，用于同一轮模拟的上下文提示 |
 | `scenario` | string | 宿舍沟通场景，最长 300 字符 |
 | `user_message` | string | 用户准备表达的话术，最长 500 字符；`is_continuation=false` 时必填 |
@@ -292,7 +294,7 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `conversation_id` | string | 后端返回的短期会话 id，复盘可继续使用 |
+| `conversation_id` | string | 后端返回的 SQLite 会话 id，复盘可继续使用 |
 | `replies` | object[] | 虚拟舍友回复，最多 15 条 |
 | `replies[].roommate_id` | string | 对应 `roommates[].id` |
 | `replies[].roommate` | string | 舍友展示名 |
@@ -386,7 +388,7 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 
 ### POST /api/simulate/stream
 
-状态：已实现。在保留 `/api/simulate` 完整 JSON 契约的基础上新增。后端仍先生成并校验完整 `SimulateResponse`，再输出 `start`、若干 `reply` 和 `final` 事件。
+状态：已实现，并已由前端模拟页接入。在保留 `/api/simulate` 完整 JSON 契约的基础上输出 `start`、若干 `reply` 和 `final` 事件。后端仍先生成并校验完整 `SimulateResponse`，避免输出半截结构化错误。
 
 请求字段：与 `POST /api/simulate` 完全一致，包括可选 `conversation_id`、`roommates`、`use_event_archive`、`is_continuation`、`max_replies` 和 `dialogue` 字段。
 
@@ -443,13 +445,13 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 
 ### POST /api/review
 
-状态：已实现，V2 已扩展为支持 `conversation_id` 复盘和多条话术改写建议。运行时通过 LangChain 调用 DeepSeek `deepseek-v4-flash`；缺少 `DEEPSEEK_API_KEY` 且没有兼容的 `OPENAI_API_KEY` 时返回 `503`。
+状态：已实现，V3 已扩展为支持 `conversation_id` 复盘、多条话术改写建议、沟通计划和复盘历史保存。运行时通过 LangChain 调用 DeepSeek `deepseek-v4-flash`；缺少 `DEEPSEEK_API_KEY` 且没有兼容的 `OPENAI_API_KEY` 时返回 `503`。
 
 请求字段：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `conversation_id` | string | 可选，优先从后端短期会话记忆读取模拟对话；不传时使用 `dialogue` |
+| `conversation_id` | string | 可选，优先从后端 SQLite 会话记忆读取模拟对话；不传时使用 `dialogue` |
 | `scenario` | string | 沟通场景，最长 300 字符 |
 | `dialogue` | object[] | 用户与虚拟舍友的对话记录，最多 50 条；未传 `conversation_id` 时需要提供有效对话 |
 | `dialogue[].speaker` | string | 发言者，枚举为 `user` / `system` / 任意 `roommate_*` id；兼容前端中文展示名 |
@@ -483,7 +485,13 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 | `rewrite_suggestions[].reason` | string | 改写原因 |
 | `rewritten_message` | string | 优化话术 |
 | `next_steps` | string[] | 后续行动建议 |
+| `communication_plan` | object | 自动生成的沟通计划卡片 |
+| `communication_plan.opening` | string | 开场白 |
+| `communication_plan.specific_request` | string | 具体请求 |
+| `communication_plan.fallback_plan` | string | 兜底方案 |
 | `safety_note` | string | 非诊断性安全提示 |
+| `is_demo` | boolean | 是否为本地演示兜底结果 |
+| `demo_notice` | string | 演示兜底说明；真实 AI 成功时为空字符串 |
 
 请求示例：
 
@@ -548,9 +556,79 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
     "提出具体可执行的休息时间规则",
     "如果多次沟通无效，可以寻求辅导员或宿舍管理员协助"
   ],
-  "safety_note": "本复盘仅用于沟通训练建议，不代表真实舍友想法，不进行心理疾病诊断，不进行医学判断，不进行人格评价。如压力持续升高，请联系辅导员、心理老师或其他现实支持。"
+  "communication_plan": {
+    "opening": "我想和你商量一个最近影响我睡眠的小问题。",
+    "specific_request": "晚上 11 点后能不能戴耳机或把游戏声音调低？",
+    "fallback_plan": "如果你那时还需要玩游戏，我们可以一起约一个安静时间，或先试一周再调整。"
+  },
+  "safety_note": "本复盘仅用于沟通训练建议，不代表真实舍友想法，不进行心理疾病诊断，不进行医学判断，不进行人格评价。如压力持续升高，请联系辅导员、心理老师或其他现实支持。",
+  "is_demo": false,
+  "demo_notice": ""
 }
 ```
+
+真实 `/api/review` 成功且 `is_demo=false` 时，后端会将报告写入 SQLite 复盘历史。若历史写入失败，接口仍返回本次复盘结果，并在后端日志记录持久化错误。
+
+### GET /api/reviews
+
+状态：已实现。返回最近复盘报告摘要，默认最多 20 条，`limit` 最大按 50 截断。
+
+查询参数：
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `limit` | number | 可选，最少 1，默认 20，超过 50 时按 50 处理 |
+
+响应字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `reports` | object[] | 按 `created_at desc` 返回的复盘摘要 |
+| `reports[].id` | string | 复盘报告 id |
+| `reports[].created_at` | string | 创建时间，ISO datetime |
+| `reports[].conversation_id` | string \| null | 关联模拟会话 id |
+| `reports[].scenario` | string | 沟通场景 |
+| `reports[].summary` | string | 复盘摘要 |
+| `reports[].score_clarity` | number | 表达清晰度评分 |
+| `reports[].score_empathy` | number | 共情能力评分 |
+| `reports[].score_resolution` | number | 问题解决度评分 |
+
+响应示例：
+
+```json
+{
+  "reports": [
+    {
+      "id": "review-1",
+      "created_at": "2026-05-22T08:00:00Z",
+      "conversation_id": "conversation-1",
+      "scenario": "舍友晚上打游戏声音较大，影响睡眠",
+      "summary": "用户表达较温和，但需要更明确提出时间边界。",
+      "score_clarity": 82,
+      "score_empathy": 76,
+      "score_resolution": 71
+    }
+  ]
+}
+```
+
+### GET /api/reviews/{review_id}
+
+状态：已实现。返回单条复盘报告详情，包含当次请求、响应和最多最近 50 条对话快照。
+
+响应字段：继承 `GET /api/reviews` 单条摘要字段，并增加：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `request` | object | 当次 `/api/review` 请求快照 |
+| `response` | object | 当次 `/api/review` 响应快照 |
+| `dialogue` | object[] | 保存复盘时使用的对话快照，最多 50 条 |
+
+错误语义：
+
+| 场景 | HTTP 状态码 | 说明 |
+| --- | --- | --- |
+| 复盘历史不存在 | `404` | 返回 `复盘历史不存在或已被删除。` |
 
 ## 错误语义
 
@@ -560,6 +638,7 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 | conversation memory 不存在 | `400` | `/api/simulate`、`/api/simulate/stream` 或 `/api/review` 传入旧 `conversation_id` 时，提示重新演练 |
 | 当前没有事件档案 | `400` | `/api/events/insight` 在没有事件记录时返回 `请先记录至少一条事件后再生成 AI 心晴见解。` |
 | 删除不存在事件 | `404` | `DELETE /api/events/{id}` 返回 `事件档案不存在或已被删除。` |
+| 复盘历史不存在 | `404` | `GET /api/reviews/{review_id}` 返回 `复盘历史不存在或已被删除。` |
 | 未配置 `DEEPSEEK_API_KEY` 或兼容的 `OPENAI_API_KEY` | `503` | AI 服务未配置，`/api/simulate`、`/api/simulate/stream`、`/api/review` 和 `/api/events/insight` 不返回模板伪结果 |
 | LangChain / DeepSeek 调用失败 | `502` | 上游模型调用失败，后端返回 AI 服务调用失败语义 |
 | AI 输出结构不符合契约或安全边界 | `502` | 模型输出无法解析为接口约定结构，或 `safety_note` 缺少必要安全边界，后端返回 AI 输出结构错误语义 |
@@ -568,7 +647,7 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 
 ## 当前运行限制
 
-- 事件档案使用后端本地 JSON 文件保存，默认路径为 `backend/.runtime/events.json`；可用 `DORM_HARMONY_EVENT_STORE_PATH` 覆盖。该存储适合本地 Demo，不提供账号体系、云端同步、多用户隔离或生产数据库能力。
-- 会话记忆使用后端单进程内存保存，`conversation_id` 只在当前 FastAPI 进程内有效；后端重启、换进程或传入旧 id 后，conversation memory 会丢失。
-- 浏览器刷新后前端可能恢复 `localStorage` 中的 `conversation_id`，但 conversation memory 只保存在后端单进程内，不能靠刷新持久化；后端重启、换进程或旧 id 会导致 memory 丢失，需要重新演练。
+- 事件档案、会话记忆和复盘历史使用后端本地 SQLite 文件保存，默认路径为 `backend/.runtime/dorm_harmony.sqlite3`；可用 `DORM_HARMONY_SQLITE_PATH` 覆盖。该存储适合本地 Demo，不提供账号体系、云端同步、多用户隔离、权限控制或云端备份能力。
+- 会话记忆不再是单进程内存态，后端重启后同一 SQLite 文件内的 `conversation_id` 可继续用于 continuation 和复盘；切换 SQLite 文件、清空 `.runtime` 或传入不存在的旧 id 后，仍会返回 `400` 并提示重新演练。
+- 浏览器刷新后前端可能恢复 `localStorage` 中的 `conversation_id`，但真实会话内容以 SQLite 为准。
 - 本接口契约不包含真实用户身份、权限、后台管理或长期个人数据管理能力。
