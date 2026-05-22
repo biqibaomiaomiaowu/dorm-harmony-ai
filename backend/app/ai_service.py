@@ -29,6 +29,7 @@ from app.env import load_project_env
 from app.schemas import (
     ArchiveAnalysisResponse,
     ArchiveInsightResponse,
+    CommunicationPlan,
     DialogueMessage,
     EventRecord,
     ReviewPerformanceScores,
@@ -206,6 +207,14 @@ class ReviewPerformanceScoresDraft(BaseModel):
     resolution: object | None = None
 
 
+class ReviewCommunicationPlanDraft(BaseModel):
+    """AI 复盘沟通计划草稿，允许缺项后由服务层兜底。"""
+
+    opening: object | None = None
+    specific_request: object | None = None
+    fallback_plan: object | None = None
+
+
 class ReviewDraftResponse(BaseModel):
     """AI 复盘草稿响应；最终仍会收敛为严格 ReviewResponse。"""
 
@@ -216,7 +225,16 @@ class ReviewDraftResponse(BaseModel):
     rewrite_suggestions: list[ReviewRewriteSuggestionDraft] | None = None
     rewritten_message: object | None = None
     next_steps: list[object] | None = None
+    communication_plan: ReviewCommunicationPlanDraft | None = None
     safety_note: object | None = None
+
+
+@dataclass(frozen=True)
+class ReviewWithDialogueResult:
+    """服务层复盘结果，同时暴露实际用于 AI 复盘的 dialogue 快照。"""
+
+    response: ReviewResponse
+    dialogue: list[DialogueMessage]
 
 
 class _ConversationState(TypedDict):
@@ -719,16 +737,24 @@ class DormHarmonyAIService:
 
     def review(self, request: ReviewRequest) -> ReviewResponse:
         """生成沟通复盘结果，并保证返回值符合 ReviewResponse。"""
+        return self.review_with_dialogue(request).response
+
+    def review_with_dialogue(self, request: ReviewRequest) -> ReviewWithDialogueResult:
+        """生成复盘结果，并返回实际用于复盘的 dialogue，供路由持久化。"""
         public_error: AIServiceUnavailableError | None = None
-        result: object | None = None
+        result: ReviewWithDialogueResult | None = None
 
         try:
-            dialogue = self._resolve_review_dialogue(request)
+            dialogue = self.resolve_review_dialogue(request)
             self._validate_review_dialogue_has_user_message(dialogue)
             draft = _ensure_review_draft_instance(
                 self._get_runner().generate_review(request, dialogue)
             )
-            result = self._build_review_response_from_draft(request, draft, dialogue)
+            response = self._build_review_response_from_draft(request, draft, dialogue)
+            result = ReviewWithDialogueResult(
+                response=_ensure_model_instance(response, ReviewResponse),
+                dialogue=dialogue,
+            )
         except AIServiceConfigurationError:
             raise
         except ConversationMemoryNotFoundError:
@@ -746,8 +772,10 @@ class DormHarmonyAIService:
 
         if public_error is not None:
             raise public_error
+        if result is None:
+            raise AIServiceUnavailableError(_UNAVAILABLE_ERROR_MESSAGE)
 
-        return _ensure_model_instance(result, ReviewResponse)
+        return result
 
     def _simulate_with_memory(
         self,
@@ -852,12 +880,16 @@ class DormHarmonyAIService:
 
         return self._memory.start_conversation()
 
-    def _resolve_review_dialogue(self, request: ReviewRequest) -> list[DialogueMessage]:
+    def resolve_review_dialogue(self, request: ReviewRequest) -> list[DialogueMessage]:
         """复盘优先读取后端记忆，未提供会话 id 时使用 legacy dialogue。"""
         if request.conversation_id:
             return self._memory.get_dialogue(request.conversation_id, limit=50)
 
         return request.dialogue[-50:]
+
+    def _resolve_review_dialogue(self, request: ReviewRequest) -> list[DialogueMessage]:
+        """兼容旧内部调用；路由层应使用公开 resolve_review_dialogue。"""
+        return self.resolve_review_dialogue(request)
 
     def _validate_review_dialogue_has_user_message(
         self,
@@ -966,6 +998,13 @@ class DormHarmonyAIService:
                 draft.next_steps or [],
                 fallback=["选择双方情绪较平稳的时间，围绕一个具体可执行的调整继续沟通。"],
             ),
+            "communication_plan": _normalize_review_communication_plan(
+                draft.communication_plan,
+                request,
+                suggestions,
+                rewritten_message,
+                draft.next_steps or [],
+            ),
             "safety_note": _normalize_review_safety_note(draft.safety_note),
         }
 
@@ -1047,6 +1086,8 @@ def _ensure_review_draft_instance(value: object) -> ReviewDraftResponse:
             draft_payload["next_steps"] = []
         if not isinstance(draft_payload.get("performance_scores"), dict):
             draft_payload["performance_scores"] = None
+        if not isinstance(draft_payload.get("communication_plan"), dict):
+            draft_payload["communication_plan"] = None
 
         try:
             return ReviewDraftResponse.model_validate(draft_payload)
@@ -1135,6 +1176,40 @@ def _normalize_review_safety_note(value: object | None) -> str:
         return REVIEW_SAFETY_NOTE
 
     return text
+
+
+def _normalize_review_communication_plan(
+    plan: ReviewCommunicationPlanDraft | None,
+    request: ReviewRequest,
+    suggestions: list[ReviewRewriteSuggestion],
+    rewritten_message: str,
+    next_steps: list[object],
+) -> CommunicationPlan:
+    """AI 沟通计划缺项时，基于场景、改写建议和下一步动作生成兜底计划。"""
+    opening = _clean_text(plan.opening if plan is not None else None)
+    specific_request = _clean_text(plan.specific_request if plan is not None else None)
+    fallback_plan = _clean_text(plan.fallback_plan if plan is not None else None)
+    cleaned_next_steps = _sanitize_text_list(
+        next_steps,
+        fallback=["如果当下不方便达成一致，先约定稍后再谈，必要时请辅导员等现实支持协助。"],
+    )
+
+    if opening is None:
+        opening = f"我想和你商量一下“{request.scenario}”，先说明这件事对我的具体影响。"
+    if specific_request is None:
+        specific_request = rewritten_message
+        if not specific_request and suggestions:
+            specific_request = suggestions[0].suggested_message
+        if not specific_request:
+            specific_request = "提出一个具体、可执行、方便对方回应的调整请求。"
+    if fallback_plan is None:
+        fallback_plan = cleaned_next_steps[0]
+
+    return CommunicationPlan(
+        opening=_truncate_review_text(opening, 500),
+        specific_request=_truncate_review_text(specific_request, 500),
+        fallback_plan=_truncate_review_text(fallback_plan, 500),
+    )
 
 
 def _normalize_review_suggestions(

@@ -2,10 +2,11 @@
 
 from contextlib import asynccontextmanager
 import json
+import logging
 import os
 from threading import Lock
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -20,6 +21,7 @@ from app.ai_service import (
 from app.archive_analysis import analyze_archive_pressure
 from app.env import load_project_env
 from app.event_store import EventStore, SQLiteEventStore, get_default_sqlite_path
+from app.review_store import SQLiteReviewHistoryStore
 from app.schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
@@ -28,6 +30,8 @@ from app.schemas import (
     EventArchiveResponse,
     EventRecord,
     EventRecordCreate,
+    ReviewHistoryResponse,
+    ReviewReportDetail,
     ReviewRequest,
     ReviewResponse,
     SimulateRequest,
@@ -38,6 +42,7 @@ from app.scoring import analyze_pressure
 
 
 load_project_env()
+logger = logging.getLogger(__name__)
 
 
 def _get_cors_origins() -> list[str]:
@@ -99,6 +104,11 @@ def get_ai_service() -> DormHarmonyAIService:
 def get_event_store() -> SQLiteEventStore:
     """FastAPI 依赖注入入口，测试中可覆盖事件档案存储。"""
     return SQLiteEventStore()
+
+
+def get_review_history_store() -> SQLiteReviewHistoryStore:
+    """FastAPI 依赖注入入口，测试中可覆盖复盘历史存储。"""
+    return SQLiteReviewHistoryStore()
 
 
 def _build_archive_context_summary(event_store: EventStore) -> str | None:
@@ -287,10 +297,26 @@ def simulate_stream(
 def review(
     request: ReviewRequest,
     ai_service: DormHarmonyAIService = Depends(get_ai_service),
+    review_store: SQLiteReviewHistoryStore = Depends(get_review_history_store),
 ) -> ReviewResponse:
     """调用 AI 服务生成结构化沟通复盘报告。"""
     try:
-        return ai_service.review(request)
+        review_with_dialogue = getattr(ai_service, "review_with_dialogue", None)
+        if callable(review_with_dialogue):
+            result = review_with_dialogue(request)
+            response = result.response
+            dialogue = list(result.dialogue)
+        else:
+            response = ai_service.review(request)
+            dialogue = request.dialogue[-50:]
+
+        if not response.is_demo:
+            try:
+                review_store.add(request, response, dialogue)
+            except Exception:
+                logger.exception("Failed to persist review report history")
+
+        return response
     except AIServiceConfigurationError as exc:
         # 配置缺失是本地部署问题，前端按 503 展示“需要配置 AI 服务”。
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -303,3 +329,25 @@ def review(
     except AIServiceUnavailableError as exc:
         # 已配置但模型调用失败或输出异常，按 502 处理为上游服务不可用。
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/reviews", response_model=ReviewHistoryResponse)
+def list_review_reports(
+    limit: int = Query(default=20, ge=1),
+    review_store: SQLiteReviewHistoryStore = Depends(get_review_history_store),
+) -> ReviewHistoryResponse:
+    """返回最近的沟通复盘历史摘要。"""
+    return ReviewHistoryResponse(reports=review_store.list(limit=min(limit, 50)))
+
+
+@app.get("/api/reviews/{review_id}", response_model=ReviewReportDetail)
+def get_review_report(
+    review_id: str,
+    review_store: SQLiteReviewHistoryStore = Depends(get_review_history_store),
+) -> ReviewReportDetail:
+    """返回单条沟通复盘历史详情。"""
+    report = review_store.get(review_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="复盘历史不存在或已被删除。")
+
+    return report

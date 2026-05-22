@@ -852,7 +852,38 @@ def test_service_returns_review_from_runner():
     assert response.strengths
     assert response.performance_scores.clarity == 82
     assert response.rewrite_suggestions[0].message_index == 0
+    assert response.communication_plan.opening
+    assert response.communication_plan.specific_request
+    assert response.communication_plan.fallback_plan
     assert "不进行心理诊断" in response.safety_note
+
+
+def test_review_with_dialogue_result_exposes_actual_dialogue():
+    service = DormHarmonyAIService(runner=FakeRunner(), memory=ai_service.ConversationMemory())
+
+    result = service.review_with_dialogue(
+        ReviewRequest(
+            scenario="噪音冲突",
+            dialogue=[DialogueMessage(speaker="user", message="晚上能不能小声一点？")],
+        )
+    )
+
+    assert result.response.summary
+    assert result.dialogue[0].speaker == "user"
+    assert result.dialogue[0].message == "晚上能不能小声一点？"
+
+
+def test_resolve_review_dialogue_is_public_for_routes():
+    service = DormHarmonyAIService(runner=FakeRunner(), memory=ai_service.ConversationMemory())
+
+    dialogue = service.resolve_review_dialogue(
+        ReviewRequest(
+            scenario="噪音冲突",
+            dialogue=[DialogueMessage(speaker="user", message="晚上能不能小声一点？")],
+        )
+    )
+
+    assert dialogue[0].speaker == "user"
 
 
 def test_review_uses_memory_dialogue_and_returns_multi_rewrites():
@@ -1015,6 +1046,28 @@ def test_review_recovers_nullable_and_mixed_ai_draft_fields():
     assert response.performance_scores.resolution == 0
     assert response.rewrite_suggestions[0].message_index == 0
     assert "仅用于沟通训练建议" in response.safety_note
+
+
+def test_review_response_includes_fallback_communication_plan():
+    class DraftRunnerWithoutPlan:
+        def generate_review(self, request, dialogue):
+            return make_review_response_payload()
+
+    service = DormHarmonyAIService(
+        runner=DraftRunnerWithoutPlan(),
+        memory=ai_service.ConversationMemory(),
+    )
+
+    response = service.review(
+        ReviewRequest(
+            scenario="噪音冲突",
+            dialogue=[DialogueMessage(speaker="user", message="晚上能不能小声一点？")],
+        )
+    )
+
+    assert response.communication_plan.opening
+    assert "11 点后" in response.communication_plan.specific_request
+    assert response.communication_plan.fallback_plan
 
 
 def test_service_normalizes_generated_reply_identity_to_requested_roommate_profile():

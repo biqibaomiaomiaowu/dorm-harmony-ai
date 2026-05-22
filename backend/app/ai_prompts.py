@@ -77,7 +77,8 @@ REVIEW_SYSTEM_PROMPT = (
     "帮助用户复盘大学宿舍关系沟通场景中的表达方式。"
     f"{SAFETY_BOUNDARY_TEXT}"
     "请输出结构化 ReviewResponse，包括 summary、strengths、risks、"
-    "performance_scores、rewrite_suggestions、rewritten_message、next_steps 和 safety_note。"
+    "performance_scores、rewrite_suggestions、rewritten_message、next_steps、"
+    "communication_plan 和 safety_note。"
     "rewrite_suggestions 必须从完整 dialogue 中筛选用户表达不够好的话术，"
     "所有表达不好的用户发言都必须给出建议话术，不要只选择一条，"
     "这些建议只能对应 speaker=user 消息，"
@@ -87,6 +88,9 @@ REVIEW_SYSTEM_PROMPT = (
     "不能选择虚拟舍友或系统消息，也不能编造 dialogue 中不存在的原话。"
     "performance_scores 是表现总结评分，必须包含 clarity、empathy、resolution 三个字段，"
     "分别表示表达清晰度、共情能力、问题解决度，值必须是 0-100 的整数。"
+    "communication_plan 必须包含 opening、specific_request、fallback_plan 三段："
+    "opening 是用户下一次现实沟通的温和开场白，specific_request 是具体请求，"
+    "fallback_plan 是对方暂时不同意或沟通受阻时的兜底方案。"
     "safety_note 必须包含：仅用于沟通训练建议、不代表真实舍友想法、"
     "不进行心理诊断或不进行心理疾病诊断、不进行医学判断、不进行人格评价、"
     "辅导员或心理老师或现实支持。"
@@ -99,6 +103,7 @@ REVIEW_SYSTEM_PROMPT = (
     '"issue":"问题","suggested_message":"改写话术","reason":"理由"}],'
     '"rewritten_message":"更温和、具体、可执行的改写话术",'
     '"next_steps":["下一步现实沟通建议"],'
+    '"communication_plan":{"opening":"开场白","specific_request":"具体请求","fallback_plan":"兜底方案"},'
     '"safety_note":"本复盘仅用于沟通训练建议，不代表真实舍友想法，不进行心理诊断，不进行医学判断，不进行人格评价。如压力持续升高，请寻求现实支持或联系辅导员、心理老师。"}'
     "strengths、risks、next_steps 都必须至少包含一条非空字符串。"
     "建议必须温和、具体、可执行，并强调现实沟通边界。"

@@ -18,12 +18,21 @@ from app.main import (
     app,
     get_ai_service,
     get_event_store,
+    get_review_history_store,
     archive_insight,
     review,
     simulate,
 )
+from app.review_store import SQLiteReviewHistoryStore
 from app.safety import SAFETY_DISCLAIMER
-from app.schemas import ArchiveInsightResponse, ReviewResponse, RoommateReply, SimulateResponse
+from app.schemas import (
+    ArchiveInsightResponse,
+    DialogueMessage,
+    ReviewRequest,
+    ReviewResponse,
+    RoommateReply,
+    SimulateResponse,
+)
 
 
 client = TestClient(app)
@@ -247,9 +256,11 @@ def clear_dependency_overrides(monkeypatch, tmp_path):
     )
     app.dependency_overrides.pop(get_ai_service, None)
     app.dependency_overrides.pop(get_event_store, None)
+    app.dependency_overrides.pop(get_review_history_store, None)
     yield
     app.dependency_overrides.pop(get_ai_service, None)
     app.dependency_overrides.pop(get_event_store, None)
+    app.dependency_overrides.pop(get_review_history_store, None)
 
 
 def test_health_endpoint_returns_ok_status():
@@ -874,6 +885,182 @@ def test_review_endpoint_returns_structured_report():
     assert body["rewrite_suggestions"]
     assert "11 点后" in body["rewritten_message"]
     assert "不进行心理诊断" in body["safety_note"]
+    assert body["communication_plan"]["opening"]
+    assert body["communication_plan"]["specific_request"]
+    assert body["communication_plan"]["fallback_plan"]
+
+
+def test_review_endpoint_persists_report_history(tmp_path):
+    store = SQLiteReviewHistoryStore(tmp_path / "reviews.sqlite3")
+    app.dependency_overrides[get_ai_service] = lambda: FakeAIService()
+    app.dependency_overrides[get_review_history_store] = lambda: store
+
+    create = client.post(
+        "/api/review",
+        json={
+            "conversation_id": "conversation-1",
+            "scenario": "舍友晚上打游戏声音很大，影响睡眠。",
+            "dialogue": [
+                {"speaker": "user", "message": "能不能晚上小声一点？"},
+                {"speaker": "roommate_a", "message": "我会注意音量。"},
+            ],
+        },
+    )
+    listing = client.get("/api/reviews")
+    report_id = listing.json()["reports"][0]["id"]
+    detail = client.get(f"/api/reviews/{report_id}")
+
+    assert create.status_code == 200
+    assert listing.status_code == 200
+    assert listing.json()["reports"][0]["conversation_id"] == "conversation-1"
+    assert listing.json()["reports"][0]["scenario"] == "舍友晚上打游戏声音很大，影响睡眠。"
+    assert listing.json()["reports"][0]["summary"] == "表达了睡眠受影响的具体困扰。"
+    assert listing.json()["reports"][0]["score_clarity"] == 82
+    assert detail.status_code == 200
+    detail_body = detail.json()
+    assert detail_body["id"] == report_id
+    assert detail_body["request"]["conversation_id"] == "conversation-1"
+    assert detail_body["response"] == create.json()
+    assert [message["speaker"] for message in detail_body["dialogue"]] == [
+        "user",
+        "roommate_a",
+    ]
+
+
+def test_review_endpoint_persists_memory_dialogue_when_request_dialogue_empty(tmp_path):
+    store = SQLiteReviewHistoryStore(tmp_path / "reviews.sqlite3")
+    memory = ai_service.ConversationMemory()
+    conversation_id = memory.start_conversation("conversation-memory")
+    memory.append_user_message(conversation_id, "昨天 11 点后游戏声音有点影响我休息。")
+    memory.append_roommate_message(
+        conversation_id,
+        "roommate_a",
+        "舍友 A",
+        "直接型",
+        "我没注意到这么晚了，我会把音量调低。",
+    )
+    service = DormHarmonyAIService(runner=RouteMemoryRunner(), memory=memory)
+    app.dependency_overrides[get_ai_service] = lambda: service
+    app.dependency_overrides[get_review_history_store] = lambda: store
+
+    create = client.post(
+        "/api/review",
+        json={
+            "conversation_id": conversation_id,
+            "scenario": "舍友晚上打游戏声音很大，影响睡眠。",
+            "dialogue": [],
+        },
+    )
+    listing = client.get("/api/reviews")
+    report_id = listing.json()["reports"][0]["id"]
+    detail = client.get(f"/api/reviews/{report_id}")
+
+    assert create.status_code == 200
+    assert detail.status_code == 200
+    detail_body = detail.json()
+    assert detail_body["request"]["dialogue"] == []
+    assert detail_body["dialogue"] == [
+        {
+            "speaker": "user",
+            "message": "昨天 11 点后游戏声音有点影响我休息。",
+        },
+        {
+            "speaker": "roommate_a",
+            "message": "我没注意到这么晚了，我会把音量调低。",
+        },
+    ]
+
+
+def test_review_endpoint_returns_response_when_history_persistence_fails():
+    class FailingReviewHistoryStore:
+        def add(self, request, response, dialogue):
+            raise OSError("sqlite is unavailable")
+
+    app.dependency_overrides[get_ai_service] = lambda: FakeAIService()
+    app.dependency_overrides[get_review_history_store] = lambda: FailingReviewHistoryStore()
+
+    response = client.post(
+        "/api/review",
+        json={
+            "scenario": "舍友晚上打游戏声音很大，影响睡眠。",
+            "dialogue": [
+                {"speaker": "user", "message": "能不能晚上小声一点？"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["summary"] == "表达了睡眠受影响的具体困扰。"
+
+
+def test_review_endpoint_skips_demo_report_history(tmp_path):
+    class DemoAIService(FakeAIService):
+        def review(self, request):
+            response = super().review(request)
+            response.is_demo = True
+            response.demo_notice = "演示复盘"
+            return response
+
+    store = SQLiteReviewHistoryStore(tmp_path / "reviews.sqlite3")
+    app.dependency_overrides[get_ai_service] = lambda: DemoAIService()
+    app.dependency_overrides[get_review_history_store] = lambda: store
+
+    response = client.post(
+        "/api/review",
+        json={
+            "scenario": "舍友晚上打游戏声音很大，影响睡眠。",
+            "dialogue": [
+                {"speaker": "user", "message": "能不能晚上小声一点？"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["is_demo"] is True
+    assert client.get("/api/reviews").json()["reports"] == []
+
+
+def test_review_history_list_respects_limit_default_and_max(tmp_path):
+    store = SQLiteReviewHistoryStore(tmp_path / "reviews.sqlite3")
+    app.dependency_overrides[get_review_history_store] = lambda: store
+    response = FakeAIService().review(
+        ReviewRequest(
+            scenario="噪音冲突",
+            dialogue=[DialogueMessage(speaker="user", message="能不能晚上小声一点？")],
+        )
+    )
+
+    for index in range(55):
+        store.add(
+            ReviewRequest(
+                conversation_id=f"conversation-{index}",
+                scenario=f"噪音冲突 {index}",
+                dialogue=[DialogueMessage(speaker="user", message=f"第 {index} 次沟通。")],
+            ),
+            response,
+            [DialogueMessage(speaker="user", message=f"第 {index} 次沟通。")],
+        )
+
+    default_listing = client.get("/api/reviews")
+    limited_listing = client.get("/api/reviews?limit=2")
+    capped_listing = client.get("/api/reviews?limit=99")
+
+    assert default_listing.status_code == 200
+    assert len(default_listing.json()["reports"]) == 20
+    assert limited_listing.status_code == 200
+    assert len(limited_listing.json()["reports"]) == 2
+    assert capped_listing.status_code == 200
+    assert len(capped_listing.json()["reports"]) == 50
+    assert capped_listing.json()["reports"][0]["scenario"] == "噪音冲突 54"
+
+
+def test_review_history_detail_returns_404_for_missing_report(tmp_path):
+    store = SQLiteReviewHistoryStore(tmp_path / "reviews.sqlite3")
+    app.dependency_overrides[get_review_history_store] = lambda: store
+
+    response = client.get("/api/reviews/missing-report")
+
+    assert response.status_code == 404
 
 
 def test_review_endpoint_accepts_frontend_display_payload_until_ai_config_check():
