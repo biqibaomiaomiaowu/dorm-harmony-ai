@@ -1,7 +1,9 @@
 """FastAPI 应用入口，负责路由、CORS 和服务层错误映射。"""
 
+from contextlib import asynccontextmanager
 import json
 import os
+from threading import Lock
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +19,7 @@ from app.ai_service import (
 )
 from app.archive_analysis import analyze_archive_pressure
 from app.env import load_project_env
-from app.event_store import EventStore, SQLiteEventStore
+from app.event_store import EventStore, SQLiteEventStore, get_default_sqlite_path
 from app.schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
@@ -49,7 +51,38 @@ def _get_cors_origins() -> list[str]:
     return origins or ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 
-app = FastAPI(title="Dorm Harmony AI")
+_SHARED_CONVERSATION_MEMORY: ConversationMemory | None = None
+_SHARED_CONVERSATION_MEMORY_LOCK = Lock()
+
+
+def get_shared_conversation_memory() -> ConversationMemory:
+    """懒加载共享会话记忆，避免模块 import 时写入运行时 SQLite。"""
+    global _SHARED_CONVERSATION_MEMORY
+    with _SHARED_CONVERSATION_MEMORY_LOCK:
+        if _SHARED_CONVERSATION_MEMORY is None:
+            _SHARED_CONVERSATION_MEMORY = ConversationMemory.sqlite(get_default_sqlite_path())
+        return _SHARED_CONVERSATION_MEMORY
+
+
+def close_shared_conversation_memory() -> None:
+    """关闭共享 SQLite 会话记忆连接。"""
+    global _SHARED_CONVERSATION_MEMORY
+    with _SHARED_CONVERSATION_MEMORY_LOCK:
+        if _SHARED_CONVERSATION_MEMORY is not None:
+            _SHARED_CONVERSATION_MEMORY.close()
+            _SHARED_CONVERSATION_MEMORY = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期：关闭共享 SQLite 会话记忆连接。"""
+    try:
+        yield
+    finally:
+        close_shared_conversation_memory()
+
+
+app = FastAPI(title="Dorm Harmony AI", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_get_cors_origins(),
@@ -57,12 +90,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_SHARED_CONVERSATION_MEMORY = ConversationMemory()
-
 
 def get_ai_service() -> DormHarmonyAIService:
     """FastAPI 依赖注入入口，测试中可覆盖为 fake service。"""
-    return DormHarmonyAIService(memory=_SHARED_CONVERSATION_MEMORY)
+    return DormHarmonyAIService(memory=get_shared_conversation_memory())
 
 
 def get_event_store() -> SQLiteEventStore:

@@ -478,6 +478,40 @@ def test_conversation_memory_uses_langgraph_in_memory_saver():
     assert isinstance(memory.checkpointer, InMemorySaver)
 
 
+def test_conversation_memory_persists_with_sqlite_checkpointer(tmp_path):
+    db_path = tmp_path / "memory.sqlite3"
+    first_memory = ai_service.ConversationMemory.sqlite(db_path)
+    service = DormHarmonyAIService(runner=FakeRunner(), memory=first_memory)
+
+    first = service.simulate(
+        SimulateRequest(
+            scenario="噪音冲突",
+            user_message="晚上能不能小声一点？",
+        )
+    )
+
+    second_memory = ai_service.ConversationMemory.sqlite(db_path)
+    dialogue = second_memory.get_dialogue(first.conversation_id)
+
+    assert any(
+        line.speaker == "user" and "小声" in line.message
+        for line in dialogue
+    )
+
+
+def test_conversation_memory_persists_latest_turn_with_sqlite(tmp_path):
+    db_path = tmp_path / "memory.sqlite3"
+    first_memory = ai_service.ConversationMemory.sqlite(db_path)
+    conversation_id = first_memory.start_conversation()
+
+    first_memory.mark_latest_turn(conversation_id, "turn-1")
+
+    second_memory = ai_service.ConversationMemory.sqlite(db_path)
+
+    assert second_memory.is_latest_turn(conversation_id, "turn-1") is True
+    assert second_memory.is_latest_turn(conversation_id, "turn-2") is False
+
+
 def test_service_returns_conversation_id_and_persists_turn_memory():
     request = SimulateRequest(scenario="噪音冲突", user_message="晚上能不能小声一点？")
     runner = ScriptedMultiAgentRunner(

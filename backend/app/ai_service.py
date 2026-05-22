@@ -3,8 +3,13 @@
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import logging
 import os
+from pathlib import Path
 import re
+import sqlite3
+from threading import RLock
 from typing import Annotated, Protocol, TypedDict, TypeVar
 from uuid import uuid4
 
@@ -136,6 +141,7 @@ _REVIEW_ORIGINAL_MESSAGE_MAX_LENGTH = 500
 _REVIEW_SUGGESTED_MESSAGE_MAX_LENGTH = 500
 _REVIEW_ISSUE_MAX_LENGTH = 300
 _REVIEW_REASON_MAX_LENGTH = 300
+logger = logging.getLogger(__name__)
 _IMPROVABLE_USER_MESSAGE_KEYWORDS = (
     "傻",
     "闭嘴",
@@ -217,7 +223,7 @@ class _ConversationState(TypedDict):
     messages: Annotated[list, add_messages]
 
 
-def _create_memory_graph(checkpointer: InMemorySaver):
+def _create_memory_graph(checkpointer):
     """创建一个只用于 LangGraph checkpointer 存取消息的极小图。"""
 
     def passthrough(state: _ConversationState) -> dict[str, list]:
@@ -231,36 +237,95 @@ def _create_memory_graph(checkpointer: InMemorySaver):
 
 
 class ConversationMemory:
-    """基于 LangGraph InMemorySaver 的单进程短期会话记忆。"""
+    """基于 LangGraph checkpointer 的短期会话记忆。"""
 
-    def __init__(self, checkpointer: InMemorySaver | None = None) -> None:
+    def __init__(
+        self,
+        checkpointer: InMemorySaver | None = None,
+        *,
+        sqlite_connection: sqlite3.Connection | None = None,
+    ) -> None:
         self.checkpointer = checkpointer or InMemorySaver()
+        self._sqlite_connection = sqlite_connection
+        self._lock = RLock()
         self._graph = _create_memory_graph(self.checkpointer)
         self._conversation_ids: set[str] = set()
         self._latest_turn_ids: dict[str, str] = {}
+        if self._sqlite_connection is not None:
+            self._ensure_sqlite_schema()
+
+    @classmethod
+    def sqlite(cls, path: Path) -> "ConversationMemory":
+        """创建 SQLite-backed LangGraph 会话记忆。"""
+        os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
+        from langgraph.checkpoint.sqlite import SqliteSaver
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(path, check_same_thread=False, timeout=5)
+        connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute("PRAGMA journal_mode = WAL")
+        checkpointer = SqliteSaver(connection)
+        checkpointer.setup()
+        return cls(checkpointer=checkpointer, sqlite_connection=connection)
 
     def start_conversation(self, conversation_id: str | None = None) -> str:
         """创建或登记一条短期会话。"""
         resolved_id = (conversation_id or str(uuid4())).strip()
         if not resolved_id:
             resolved_id = str(uuid4())
-        self._conversation_ids.add(resolved_id)
+        with self._lock:
+            if self._sqlite_connection is None:
+                self._conversation_ids.add(resolved_id)
+            else:
+                self._insert_conversation_meta_if_missing(resolved_id)
         return resolved_id
 
     def has_conversation(self, conversation_id: str) -> bool:
-        """判断当前进程内是否登记过该会话。"""
-        return conversation_id in self._conversation_ids
+        """判断是否登记过该会话。"""
+        with self._lock:
+            if self._sqlite_connection is None:
+                return conversation_id in self._conversation_ids
+
+            cursor = self._sqlite_connection.execute(
+                """
+                SELECT 1
+                FROM conversation_meta
+                WHERE conversation_id = ?
+                """,
+                (conversation_id,),
+            )
+            return cursor.fetchone() is not None
 
     def mark_latest_turn(self, conversation_id: str, turn_id: str | None) -> None:
         """记录当前会话最新用户回合，用于丢弃过期 continuation。"""
-        if turn_id:
-            self._latest_turn_ids[conversation_id] = turn_id
+        if not turn_id:
+            return
+
+        with self._lock:
+            if self._sqlite_connection is None:
+                self._latest_turn_ids[conversation_id] = turn_id
+            else:
+                self._upsert_conversation_latest_turn(conversation_id, turn_id)
 
     def is_latest_turn(self, conversation_id: str, turn_id: str | None) -> bool:
         """判断请求是否仍属于当前最新用户回合。"""
         if not turn_id:
             return True
-        return self._latest_turn_ids.get(conversation_id) in {None, turn_id}
+        with self._lock:
+            if self._sqlite_connection is None:
+                return self._latest_turn_ids.get(conversation_id) in {None, turn_id}
+
+            cursor = self._sqlite_connection.execute(
+                """
+                SELECT latest_turn_id
+                FROM conversation_meta
+                WHERE conversation_id = ?
+                """,
+                (conversation_id,),
+            )
+            row = cursor.fetchone()
+            latest_turn_id = row[0] if row is not None else None
+            return latest_turn_id in {None, turn_id}
 
     def append_user_message(self, conversation_id: str, message: str) -> None:
         """追加用户消息。"""
@@ -321,19 +386,145 @@ class ConversationMemory:
 
         return counts
 
+    def close(self) -> None:
+        """关闭 SQLite-backed memory 持有的连接；内存模式无操作。"""
+        with self._lock:
+            if self._sqlite_connection is not None:
+                self._sqlite_connection.close()
+                self._sqlite_connection = None
+
     def _append_message(self, conversation_id: str, message: BaseMessage) -> None:
-        self.start_conversation(conversation_id)
-        self._graph.update_state(
-            self._config(conversation_id),
-            {"messages": [message]},
-        )
+        with self._lock:
+            self.start_conversation(conversation_id)
+            try:
+                self._graph.update_state(
+                    self._config(conversation_id),
+                    {"messages": [message]},
+                )
+            except Exception:
+                self._delete_conversation_meta_if_checkpoint_empty(conversation_id)
+                raise
+            self._touch_conversation_meta_best_effort(conversation_id)
 
     def _get_messages(self, conversation_id: str) -> list[BaseMessage]:
-        state = self._graph.get_state(self._config(conversation_id))
-        return list(state.values.get("messages", []))
+        with self._lock:
+            state = self._graph.get_state(self._config(conversation_id))
+            return list(state.values.get("messages", []))
 
     def _config(self, conversation_id: str) -> dict[str, dict[str, str]]:
         return {"configurable": {"thread_id": conversation_id}}
+
+    def _ensure_sqlite_schema(self) -> None:
+        """创建会话元数据表。"""
+        if self._sqlite_connection is None:
+            return
+
+        with self._lock:
+            self._sqlite_connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_meta (
+                    conversation_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    latest_turn_id TEXT
+                )
+                """
+            )
+            self._sqlite_connection.commit()
+
+    def _insert_conversation_meta_if_missing(self, conversation_id: str) -> None:
+        """首次登记会话元数据，不覆盖已有 latest_turn。"""
+        if self._sqlite_connection is None:
+            return
+
+        now = _utc_now_iso()
+        self._sqlite_connection.execute(
+            """
+            INSERT INTO conversation_meta (
+                conversation_id,
+                created_at,
+                updated_at,
+                latest_turn_id
+            )
+            VALUES (?, ?, ?, NULL)
+            ON CONFLICT(conversation_id) DO NOTHING
+            """,
+            (conversation_id, now, now),
+        )
+        self._sqlite_connection.commit()
+
+    def _upsert_conversation_latest_turn(
+        self,
+        conversation_id: str,
+        turn_id: str,
+    ) -> None:
+        """持久化指定会话的最新用户回合。"""
+        if self._sqlite_connection is None:
+            return
+
+        now = _utc_now_iso()
+        self._sqlite_connection.execute(
+            """
+            INSERT INTO conversation_meta (
+                conversation_id,
+                created_at,
+                updated_at,
+                latest_turn_id
+            )
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(conversation_id) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                latest_turn_id = excluded.latest_turn_id
+            """,
+            (conversation_id, now, now, turn_id),
+        )
+        self._sqlite_connection.commit()
+
+    def _touch_conversation_meta_best_effort(self, conversation_id: str) -> None:
+        """checkpoint 写入后刷新会话更新时间；失败不回滚已写入消息。"""
+        if self._sqlite_connection is None:
+            return
+
+        try:
+            self._sqlite_connection.execute(
+                """
+                UPDATE conversation_meta
+                SET updated_at = ?
+                WHERE conversation_id = ?
+                """,
+                (_utc_now_iso(), conversation_id),
+            )
+            self._sqlite_connection.commit()
+        except Exception:
+            logger.exception(
+                "Failed to refresh conversation metadata for %s after checkpoint write",
+                conversation_id,
+            )
+
+    def _delete_conversation_meta_if_checkpoint_empty(self, conversation_id: str) -> None:
+        """checkpoint 写入失败且没有任何消息时，清理空会话元数据。"""
+        if self._sqlite_connection is None:
+            return
+
+        try:
+            state = self._graph.get_state(self._config(conversation_id))
+            if state.values.get("messages"):
+                return
+            self._sqlite_connection.execute(
+                "DELETE FROM conversation_meta WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            self._sqlite_connection.commit()
+        except Exception:
+            logger.exception(
+                "Failed to clean empty conversation metadata for %s after checkpoint error",
+                conversation_id,
+            )
+
+
+def _utc_now_iso() -> str:
+    """返回 SQLite 元数据使用的 UTC ISO 时间。"""
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _message_to_dialogue(message: BaseMessage) -> DialogueMessage:
