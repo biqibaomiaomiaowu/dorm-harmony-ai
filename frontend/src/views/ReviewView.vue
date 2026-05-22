@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 
+import {
+  fetchReviewHistory,
+  fetchReviewReport,
+  type ReviewReportDetail,
+  type ReviewReportSummary,
+} from '@/data/reviewHistory'
 import {
   ANALYSIS_RESULT_STORAGE_KEY,
   LAST_EVENT_STORAGE_KEY,
@@ -48,15 +54,45 @@ interface StoredReviewCache {
   dialogue_fingerprint?: string
 }
 
+interface ReviewSnapshot {
+  request: ReviewRequest
+  response: ReviewResponse
+  dialogue: ReviewDialogueLine[]
+  roommateNames: ReviewContext['roommateNames']
+}
+
 const fallbackDialogueMessage = '请先明确你本次沟通希望对方做出的具体调整。'
 const fallbackSystemDialogueMessage = '暂无模拟对话缓存，请先返回模拟页完成一次对话。'
+const focusableSelector = [
+  `button:not([disabled]):not([aria-disabled="true"])`,
+  'a[href]',
+  'textarea:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',')
 
+const router = useRouter()
 const reviewError = ref('')
 const isLoading = ref(true)
 const storedDialogue = ref<ReviewDialogueLine[]>([])
 const storedRoommateNames = ref<ReviewContext['roommateNames']>({})
 const reviewRequest = ref<ReviewRequest>({ scenario: '沟通复盘场景' })
-const reviewResponse = ref<ReviewResponse>(buildDemoReviewResponse('复盘页初始化', reviewRequest.value))
+const reviewResponse = ref<ReviewResponse>(
+  buildDemoReviewResponse('复盘页初始化', reviewRequest.value),
+)
+const currentReviewSnapshot = ref<ReviewSnapshot | null>(null)
+const reviewHistory = ref<ReviewReportSummary[]>([])
+const reviewHistoryError = ref('')
+const isHistoryLoading = ref(false)
+const isReportSwitching = ref(false)
+const activeReviewId = ref<string | null>(null)
+const isDialogueModalOpen = ref(false)
+const dialogueModalRef = ref<HTMLElement | null>(null)
+const dialogueTriggerRef = ref<HTMLButtonElement | null>(null)
+const reviewExportRef = ref<HTMLElement | null>(null)
+const reviewExportError = ref('')
+const isExportingImage = ref(false)
 const animatedPerformanceScores = ref({ clarity: 0, empathy: 0, resolution: 0 })
 let reviewScoresAnimationFrame = 0
 let isReviewViewActive = false
@@ -302,6 +338,38 @@ const suggestionCards = computed<ReviewRewriteSuggestion[]>(() =>
     ? reviewResponse.value.rewrite_suggestions
     : buildDemoReviewResponse('本地兜底建议', reviewRequest.value).rewrite_suggestions,
 )
+const activeReportKey = computed(
+  () => activeReviewId.value ?? `current-${requestFingerprint(reviewRequest.value)}`,
+)
+const currentReportRail = computed(() => ({
+  scenario: currentReviewSnapshot.value?.request.scenario || reviewRequest.value.scenario,
+  summary: currentReviewSnapshot.value?.response.summary || reviewResponse.value.summary,
+}))
+const practiceMessage = computed(() => {
+  const rewritten = reviewResponse.value.rewritten_message.trim()
+  if (rewritten) {
+    return rewritten
+  }
+
+  return suggestionCards.value[0]?.suggested_message.trim() ?? ''
+})
+const communicationPlanItems = computed(() => [
+  {
+    icon: 'waving_hand',
+    title: '开场白',
+    text: reviewResponse.value.communication_plan.opening,
+  },
+  {
+    icon: 'task_alt',
+    title: '具体请求',
+    text: reviewResponse.value.communication_plan.specific_request,
+  },
+  {
+    icon: 'support_agent',
+    title: '兜底方案',
+    text: reviewResponse.value.communication_plan.fallback_plan,
+  },
+])
 
 function normalizeReviewScore(value: number): number {
   if (!Number.isFinite(value)) {
@@ -483,16 +551,459 @@ function dialogueSpeakerInitial(speaker: ReviewDialogueLine['speaker']) {
   }
 
   const suffix = speaker.replace('roommate_', '').trim()
-  return suffix.replace(/^custom_?/i, '').slice(-2).toUpperCase() || 'AI'
+  return (
+    suffix
+      .replace(/^custom_?/i, '')
+      .slice(-2)
+      .toUpperCase() || 'AI'
+  )
 }
 
 function originalMessageLabel(suggestion: ReviewRewriteSuggestion) {
   return suggestion.original_message.trim() || '未定位到原句'
 }
 
+function getModalFocusableElements(modalRef: HTMLElement | null) {
+  return Array.from(modalRef?.querySelectorAll<HTMLElement>(focusableSelector) ?? []).filter(
+    (element) => !element.hasAttribute('disabled') && element.tabIndex !== -1,
+  )
+}
+
+function createReviewSnapshot(): ReviewSnapshot {
+  return {
+    request: { ...reviewRequest.value },
+    response: {
+      ...reviewResponse.value,
+      strengths: [...reviewResponse.value.strengths],
+      risks: [...reviewResponse.value.risks],
+      performance_scores: { ...reviewResponse.value.performance_scores },
+      rewrite_suggestions: reviewResponse.value.rewrite_suggestions.map((suggestion) => ({
+        ...suggestion,
+      })),
+      next_steps: [...reviewResponse.value.next_steps],
+      communication_plan: { ...reviewResponse.value.communication_plan },
+    },
+    dialogue: [...storedDialogue.value],
+    roommateNames: { ...storedRoommateNames.value },
+  }
+}
+
+function applyReviewSnapshot(snapshot: ReviewSnapshot, reviewId: string | null) {
+  reviewRequest.value = { ...snapshot.request }
+  reviewResponse.value = {
+    ...snapshot.response,
+    strengths: [...snapshot.response.strengths],
+    risks: [...snapshot.response.risks],
+    performance_scores: { ...snapshot.response.performance_scores },
+    rewrite_suggestions: snapshot.response.rewrite_suggestions.map((suggestion) => ({
+      ...suggestion,
+    })),
+    next_steps: [...snapshot.response.next_steps],
+    communication_plan: { ...snapshot.response.communication_plan },
+  }
+  storedDialogue.value = [...snapshot.dialogue]
+  storedRoommateNames.value = { ...snapshot.roommateNames }
+  activeReviewId.value = reviewId
+  reviewExportError.value = ''
+}
+
+function dialogueFromReportDetail(detail: ReviewReportDetail): ReviewDialogueLine[] {
+  if (detail.dialogue.length > 0) {
+    return [...detail.dialogue]
+  }
+
+  if (detail.request.dialogue && detail.request.dialogue.length > 0) {
+    return [...detail.request.dialogue]
+  }
+
+  return [
+    {
+      speaker: 'system',
+      message: '历史记录缺少对话快照。',
+    },
+  ]
+}
+
+function snapshotFromReportDetail(detail: ReviewReportDetail): ReviewSnapshot {
+  return {
+    request: detail.request,
+    response: detail.response,
+    dialogue: dialogueFromReportDetail(detail),
+    roommateNames: {},
+  }
+}
+
+function formatReviewTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return '时间未知'
+  }
+
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)
+}
+
+function reportAverageScore(report: ReviewReportSummary) {
+  return Math.round((report.score_clarity + report.score_empathy + report.score_resolution) / 3)
+}
+
+async function loadReviewHistory() {
+  isHistoryLoading.value = true
+  reviewHistoryError.value = ''
+
+  try {
+    const result = await fetchReviewHistory(20)
+    reviewHistory.value = result.reports
+  } catch (error) {
+    reviewHistoryError.value =
+      error instanceof Error && error.message ? error.message : '复盘历史加载失败'
+  } finally {
+    isHistoryLoading.value = false
+  }
+}
+
+async function selectHistoryReport(report: ReviewReportSummary) {
+  if (activeReviewId.value === report.id || isReportSwitching.value) {
+    return
+  }
+
+  isReportSwitching.value = true
+  reviewHistoryError.value = ''
+
+  try {
+    const detail = await fetchReviewReport(report.id)
+    applyReviewSnapshot(snapshotFromReportDetail(detail), detail.id)
+    await nextTick()
+    animateReviewScores()
+  } catch (error) {
+    reviewHistoryError.value =
+      error instanceof Error && error.message ? error.message : '复盘报告加载失败'
+  } finally {
+    isReportSwitching.value = false
+  }
+}
+
+async function restoreCurrentReport() {
+  if (!currentReviewSnapshot.value || activeReviewId.value === null || isReportSwitching.value) {
+    return
+  }
+
+  isReportSwitching.value = true
+  applyReviewSnapshot(currentReviewSnapshot.value, null)
+  await nextTick()
+  animateReviewScores()
+  isReportSwitching.value = false
+}
+
+function openDialogueModal() {
+  isDialogueModalOpen.value = true
+  nextTick(() => {
+    const firstFocusable = getModalFocusableElements(dialogueModalRef.value)[0]
+    if (firstFocusable) {
+      firstFocusable.focus()
+      return
+    }
+
+    dialogueModalRef.value?.focus()
+  })
+}
+
+function closeDialogueModal() {
+  isDialogueModalOpen.value = false
+}
+
+function handleDialogueModalAfterLeave() {
+  dialogueTriggerRef.value?.focus()
+}
+
+function handleDialogueModalKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeDialogueModal()
+    return
+  }
+
+  if (event.key !== 'Tab') {
+    return
+  }
+
+  const focusableElements = getModalFocusableElements(dialogueModalRef.value)
+  if (focusableElements.length === 0) {
+    event.preventDefault()
+    dialogueModalRef.value?.focus()
+    return
+  }
+
+  const firstElement = focusableElements[0]!
+  const lastElement = focusableElements[focusableElements.length - 1]!
+  const activeElement = document.activeElement
+
+  if (!focusableElements.includes(activeElement as HTMLElement)) {
+    event.preventDefault()
+    firstElement.focus()
+    return
+  }
+
+  if (event.shiftKey && activeElement === firstElement) {
+    event.preventDefault()
+    lastElement.focus()
+    return
+  }
+
+  if (!event.shiftKey && activeElement === lastElement) {
+    event.preventDefault()
+    firstElement.focus()
+  }
+}
+
+function markdownList(items: string[]) {
+  return toSafeArray(items)
+    .map((item) => `- ${item}`)
+    .join('\n')
+}
+
+function markdownDialogue() {
+  if (!reviewDialogue.value.length) {
+    return '- 暂无对话记录'
+  }
+
+  return reviewDialogue.value
+    .map((line, index) => `${index + 1}. ${dialogueSpeakerLabel(line.speaker)}：${line.message}`)
+    .join('\n')
+}
+
+function buildReviewMarkdown() {
+  const scores = reviewResponse.value.performance_scores
+  const suggestionText = suggestionCards.value
+    .map(
+      (suggestion, index) =>
+        `${index + 1}. 原话：${originalMessageLabel(suggestion)}\n   推荐话术：${suggestion.suggested_message}\n   原因：${suggestion.reason}`,
+    )
+    .join('\n')
+  const communicationPlan = reviewResponse.value.communication_plan
+
+  return [
+    `# 沟通复盘报告`,
+    ``,
+    `## Scenario`,
+    reviewRequest.value.scenario || '沟通复盘场景',
+    ``,
+    `## Dialogue`,
+    markdownDialogue(),
+    ``,
+    `## 评分`,
+    `- Clarity：${normalizeReviewScore(scores.clarity)}%`,
+    `- Empathy：${normalizeReviewScore(scores.empathy)}%`,
+    `- Resolution：${normalizeReviewScore(scores.resolution)}%`,
+    ``,
+    `## Summary`,
+    reviewResponse.value.summary,
+    ``,
+    `## Strengths`,
+    markdownList(reviewResponse.value.strengths),
+    ``,
+    `## Risks`,
+    markdownList(reviewResponse.value.risks),
+    ``,
+    `## 原话 vs 推荐话术`,
+    suggestionText,
+    ``,
+    `## Communication Plan`,
+    `- 开场白：${communicationPlan.opening}`,
+    `- 具体请求：${communicationPlan.specific_request}`,
+    `- 兜底方案：${communicationPlan.fallback_plan}`,
+    ``,
+    `## Next Steps`,
+    markdownList(reviewResponse.value.next_steps),
+    ``,
+    `## Safety Note`,
+    reviewResponse.value.safety_note,
+    ``,
+  ].join('\n')
+}
+
+function reviewFileStamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
+function exportReviewMarkdown() {
+  reviewExportError.value = ''
+  const blob = new Blob([buildReviewMarkdown()], { type: 'text/markdown;charset=utf-8' })
+  downloadBlob(blob, `review-report-${reviewFileStamp()}.md`)
+}
+
+function copyComputedStyles(source: Element, target: Element) {
+  const sourceElements = [source, ...source.querySelectorAll('*')]
+  const targetElements = [target, ...target.querySelectorAll('*')]
+
+  sourceElements.forEach((sourceElement, index) => {
+    const targetElement = targetElements[index] as HTMLElement | undefined
+    if (!targetElement) {
+      return
+    }
+
+    const computedStyle = window.getComputedStyle(sourceElement)
+    for (let propertyIndex = 0; propertyIndex < computedStyle.length; propertyIndex += 1) {
+      const property = computedStyle.item(propertyIndex)
+      targetElement.style.setProperty(
+        property,
+        computedStyle.getPropertyValue(property),
+        computedStyle.getPropertyPriority(property),
+      )
+    }
+  })
+}
+
+function loadImage(url: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = () => reject(new Error('image load failed'))
+    image.src = url
+  })
+}
+
+function buildDialogueExportSection() {
+  const section = document.createElement('section')
+  section.style.cssText =
+    'display:grid;gap:12px;margin-top:24px;border:4px solid #2b1f22;border-radius:18px;background:#fffaf2;padding:18px;font-family:inherit;color:#2b1f22;'
+
+  const heading = document.createElement('h2')
+  heading.textContent = '完整对话记录'
+  heading.style.cssText = 'margin:0;font-size:22px;'
+  section.appendChild(heading)
+
+  reviewDialogue.value.forEach((line, index) => {
+    const row = document.createElement('p')
+    row.textContent = `${index + 1}. ${dialogueSpeakerLabel(line.speaker)}：${line.message}`
+    row.style.cssText =
+      'margin:0;border:2px solid #2b1f22;border-radius:12px;background:#ffffff;padding:10px 12px;font-size:14px;font-weight:700;line-height:1.55;'
+    section.appendChild(row)
+  })
+
+  if (!reviewDialogue.value.length) {
+    const empty = document.createElement('p')
+    empty.textContent = '暂无对话记录'
+    empty.style.cssText = 'margin:0;color:#6b5a60;font-weight:700;'
+    section.appendChild(empty)
+  }
+
+  return section
+}
+
+function measureExportClone(clone: HTMLElement, width: number) {
+  const host = document.createElement('div')
+  host.style.cssText =
+    'position:fixed;left:-10000px;top:0;z-index:-1;visibility:hidden;pointer-events:none;'
+  clone.style.width = `${width}px`
+  host.appendChild(clone)
+  document.body.appendChild(host)
+
+  try {
+    return Math.ceil(clone.scrollHeight || clone.getBoundingClientRect().height)
+  } finally {
+    host.remove()
+  }
+}
+
+async function exportReviewImage() {
+  reviewExportError.value = ''
+  isExportingImage.value = true
+
+  try {
+    const element = reviewExportRef.value
+    if (!element) {
+      throw new Error('export target missing')
+    }
+
+    const rect = element.getBoundingClientRect()
+    const width = Math.ceil(rect.width)
+    const height = Math.ceil(rect.height)
+    if (width <= 0 || height <= 0) {
+      throw new Error('export target has no size')
+    }
+
+    const clone = element.cloneNode(true) as HTMLElement
+    copyComputedStyles(element, clone)
+    clone.appendChild(buildDialogueExportSection())
+    clone.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml')
+    clone.style.width = `${width}px`
+    clone.style.background = '#fffaf2'
+    clone.style.padding = '24px'
+    const exportHeight = Math.max(height, measureExportClone(clone, width))
+
+    const serialized = new XMLSerializer().serializeToString(clone)
+    const svg = [
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${exportHeight}" viewBox="0 0 ${width} ${exportHeight}">`,
+      `<foreignObject width="100%" height="100%">${serialized}</foreignObject>`,
+      `</svg>`,
+    ].join('')
+    const svgUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }))
+
+    try {
+      const image = await loadImage(svgUrl)
+      const canvas = document.createElement('canvas')
+      const scale = Math.min(window.devicePixelRatio || 1, 2)
+      canvas.width = Math.round(width * scale)
+      canvas.height = Math.round(exportHeight * scale)
+      const context = canvas.getContext('2d')
+      if (!context) {
+        throw new Error('canvas context missing')
+      }
+
+      context.scale(scale, scale)
+      context.fillStyle = '#fffaf2'
+      context.fillRect(0, 0, width, exportHeight)
+      context.drawImage(image, 0, 0, width, exportHeight)
+
+      const pngBlob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, 'image/png'),
+      )
+      if (!pngBlob) {
+        throw new Error('png blob missing')
+      }
+
+      downloadBlob(pngBlob, `review-report-${reviewFileStamp()}.png`)
+    } finally {
+      URL.revokeObjectURL(svgUrl)
+    }
+  } catch {
+    reviewExportError.value = '图片导出失败，请改用 Markdown 导出。'
+  } finally {
+    isExportingImage.value = false
+  }
+}
+
+function practiceAgain() {
+  void router.push({
+    name: 'simulate',
+    query: {
+      scenario: reviewRequest.value.scenario,
+      practice: practiceMessage.value,
+    },
+  })
+}
+
 async function initReview() {
   isLoading.value = true
   reviewError.value = ''
+  reviewHistoryError.value = ''
+  activeReviewId.value = null
 
   const context = hydrateReviewContext()
   storedDialogue.value = context.dialogue
@@ -507,7 +1018,9 @@ async function initReview() {
   const cached = hydrateStoredReview(reviewRequest.value, context.dialogue)
   if (cached) {
     reviewResponse.value = cached
+    currentReviewSnapshot.value = createReviewSnapshot()
     isLoading.value = false
+    await loadReviewHistory()
     await nextTick()
     animateReviewScores()
     return
@@ -516,9 +1029,11 @@ async function initReview() {
   try {
     const result = await submitReviewRequest(reviewRequest.value)
     reviewResponse.value = result
+    currentReviewSnapshot.value = createReviewSnapshot()
     isLoading.value = false
     await nextTick()
     animateReviewScores()
+    await loadReviewHistory()
 
     if (result.is_demo) {
       return
@@ -538,9 +1053,7 @@ async function initReview() {
     }
   } catch (error) {
     reviewError.value =
-      error instanceof Error && error.message
-        ? error.message
-        : '复盘生成失败，请返回模拟页后重试'
+      error instanceof Error && error.message ? error.message : '复盘生成失败，请返回模拟页后重试'
   } finally {
     if (isLoading.value) {
       isLoading.value = false
@@ -581,22 +1094,29 @@ onBeforeUnmount(() => {
             }}
           </p>
         </div>
-        <div class="review-dialogue-stats">
-          <span>
-            <strong>{{ dialogueStats.userTurns }} 轮</strong>
-            用户表达
-          </span>
-          <span>
-            <strong>{{ dialogueStats.roommateReplies }} 条</strong>
-            舍友反馈
-          </span>
-        </div>
       </section>
 
+      <article class="review-dialogue-entry-card pop-card pop-shadow page-pop-in">
+        <span class="material-symbol" aria-hidden="true">forum</span>
+        <div>
+          <h2>完整对话记录</h2>
+          <p>
+            {{ dialogueStats.userTurns }} 轮用户表达 ·
+            {{ dialogueStats.roommateReplies }} 条舍友反馈
+          </p>
+        </div>
+        <button
+          ref="dialogueTriggerRef"
+          class="secondary-action pop-shadow"
+          type="button"
+          @click="openDialogueModal"
+        >
+          查看完整对话
+        </button>
+      </article>
+
       <Transition name="review-state-transition" mode="out-in">
-        <p v-if="isLoading" key="loading" class="review-state-pill pop-shadow">
-          正在生成复盘...
-        </p>
+        <p v-if="isLoading" key="loading" class="review-state-pill pop-shadow">正在生成复盘...</p>
         <p
           v-else-if="reviewError"
           key="error"
@@ -610,145 +1130,214 @@ onBeforeUnmount(() => {
       </Transition>
 
       <Transition name="review-result-transition" mode="out-in">
-        <div v-if="hasReviewResult" class="review-result-stack">
-          <section class="review-v2-section">
-            <h2>表现总结</h2>
-            <p class="review-summary-inline pop-card pop-shadow">{{ reviewResponse.summary }}</p>
-            <div class="review-score-grid">
-              <article
-                v-for="(card, index) in scoreCards"
-                :key="card.title"
-                :class="[
-                  'review-score-card',
-                  'review-card-reveal-item',
-                  `review-score-card-${card.tone}`,
-                ]"
-                :style="{ '--review-card-delay': `${index * 80}ms` }"
+        <div v-if="hasReviewResult" class="review-workspace">
+          <aside class="review-history-rail pop-card pop-shadow" aria-label="复盘历史">
+            <header>
+              <span class="material-symbol" aria-hidden="true">history</span>
+              <div>
+                <h2>历史复盘</h2>
+                <p>{{ isHistoryLoading ? '正在同步...' : `最近 ${reviewHistory.length} 条` }}</p>
+              </div>
+            </header>
+
+            <button
+              class="review-history-item"
+              :class="{ active: activeReviewId === null }"
+              type="button"
+              :disabled="isReportSwitching"
+              @click="restoreCurrentReport"
+            >
+              <span class="review-history-score">当前</span>
+              <span>
+                <strong>{{ currentReportRail.scenario || '当前复盘报告' }}</strong>
+                <small>{{ currentReportRail.summary }}</small>
+              </span>
+            </button>
+
+            <div class="review-history-list">
+              <button
+                v-for="report in reviewHistory"
+                :key="report.id"
+                class="review-history-item"
+                :class="{ active: activeReviewId === report.id }"
+                type="button"
+                :disabled="isReportSwitching"
+                @click="selectHistoryReport(report)"
               >
-                <span aria-hidden="true"></span>
-                <div class="review-score-ring">
-                  <strong>{{ card.animatedValue }}%</strong>
-                </div>
-                <h3>{{ card.title }}</h3>
-                <p>{{ card.description }}</p>
-              </article>
+                <span class="review-history-score">{{ reportAverageScore(report) }}</span>
+                <span>
+                  <strong>{{ report.scenario }}</strong>
+                  <small>{{ formatReviewTime(report.created_at) }} · {{ report.summary }}</small>
+                </span>
+              </button>
             </div>
-          </section>
 
-          <div class="review-squiggle" aria-hidden="true"></div>
+            <p v-if="reviewHistoryError" class="review-history-error">
+              {{ reviewHistoryError }}
+            </p>
+          </aside>
 
-          <section class="review-v2-section">
-            <h2>完整对话摘要</h2>
-            <div class="review-dialogue-list">
-              <article
-                v-for="(line, index) in reviewDialogue"
-                :key="`${line.speaker}-${index}-${line.message}`"
-                :class="['review-dialogue-row', { 'review-dialogue-user': line.speaker === 'user' }]"
-              >
-                <div
-                  v-if="line.speaker !== 'user'"
-                  :class="[
-                    'review-dialogue-avatar',
-                    `review-dialogue-avatar-${dialogueSpeakerInitial(line.speaker).toLowerCase()}`,
-                  ]"
-                  aria-hidden="true"
-                >
-                  {{ dialogueSpeakerInitial(line.speaker) }}
-                </div>
-                <p>
-                  <span>{{ dialogueSpeakerLabel(line.speaker) }}</span>
-                  “{{ line.message }}”
+          <Transition name="review-report-switch" mode="out-in">
+            <div
+              :key="activeReportKey"
+              ref="reviewExportRef"
+              class="review-result-stack review-report-export-surface"
+            >
+              <section class="review-v2-section">
+                <h2>表现总结</h2>
+                <p class="review-summary-inline pop-card pop-shadow">
+                  {{ reviewResponse.summary }}
                 </p>
-              </article>
-            </div>
-          </section>
-
-          <div class="review-squiggle" aria-hidden="true"></div>
-
-          <section class="review-v2-section">
-            <h2>闪光点与注意点</h2>
-            <div class="review-highlight-grid">
-              <article
-                class="review-sticker-card review-sticker-good review-card-reveal-item pop-card pop-shadow"
-                style="--review-card-delay: 180ms"
-              >
-                <div class="review-sticker-badge">
-                  <span class="material-symbol" aria-hidden="true">thumb_up</span>
-                </div>
-                <h3>本次表达的优点</h3>
-                <ul>
-                  <li v-for="item in toSafeArray(reviewResponse.strengths)" :key="`strength-${item}`">
-                    {{ item }}
-                  </li>
-                </ul>
-              </article>
-
-              <article
-                class="review-sticker-card review-sticker-risk review-card-reveal-item pop-card pop-shadow"
-                style="--review-card-delay: 260ms"
-              >
-                <div class="review-sticker-badge">
-                  <span class="material-symbol" aria-hidden="true">priority_high</span>
-                </div>
-                <h3>可能引发防御心理的表述</h3>
-                <ul>
-                  <li v-for="item in toSafeArray(reviewResponse.risks)" :key="`risk-${item}`">
-                    {{ item }}
-                  </li>
-                </ul>
-              </article>
-            </div>
-          </section>
-
-          <div class="review-squiggle" aria-hidden="true"></div>
-
-          <section class="review-v2-section review-script-section">
-            <h2>建议话术</h2>
-            <TransitionGroup name="review-suggestion" tag="div" class="review-suggestion-list">
-              <article
-                v-for="(suggestion, index) in suggestionCards"
-                :key="`${suggestion.message_index}-${suggestion.original_message}-${index}`"
-                class="review-suggestion-card pop-card pop-shadow"
-                :style="{ '--review-card-delay': `${index * 90}ms` }"
-              >
-                <header>
-                  <span>第 {{ suggestion.message_index + 1 }} 条用户表达</span>
-                  <strong>{{ suggestion.issue }}</strong>
-                </header>
-                <div class="speech-rewrite-row">
-                  <article class="speech-before">
-                    <p class="rewrite-label">原表达</p>
-                    <p>“{{ originalMessageLabel(suggestion) }}”</p>
-                  </article>
-                  <div class="speech-arrow" aria-hidden="true">
-                    <span class="material-symbol">arrow_forward</span>
-                  </div>
-                  <article class="speech-after">
-                    <p class="rewrite-label">建议表达</p>
-                    <p>“{{ suggestion.suggested_message }}”</p>
+                <div class="review-score-grid">
+                  <article
+                    v-for="(card, index) in scoreCards"
+                    :key="card.title"
+                    :class="[
+                      'review-score-card',
+                      'review-card-reveal-item',
+                      `review-score-card-${card.tone}`,
+                    ]"
+                    :style="{ '--review-card-delay': `${index * 80}ms` }"
+                  >
+                    <span aria-hidden="true"></span>
+                    <div class="review-score-ring">
+                      <strong>{{ card.animatedValue }}%</strong>
+                    </div>
+                    <h3>{{ card.title }}</h3>
+                    <p>{{ card.description }}</p>
                   </article>
                 </div>
-                <p class="review-suggestion-reason">{{ suggestion.reason }}</p>
-              </article>
-            </TransitionGroup>
-          </section>
+              </section>
 
-          <section class="review-bottom-grid">
-            <article class="review-block pop-card pop-shadow">
-              <h2>后续行动建议</h2>
-              <ul>
-                <li v-for="item in toSafeArray(reviewResponse.next_steps)" :key="`next-${item}`">
-                  {{ item }}
-                </li>
-              </ul>
-            </article>
-          </section>
+              <div class="review-squiggle" aria-hidden="true"></div>
+
+              <section class="review-v2-section">
+                <h2>闪光点与注意点</h2>
+                <div class="review-highlight-grid">
+                  <article
+                    class="review-sticker-card review-sticker-good review-card-reveal-item pop-card pop-shadow"
+                    style="--review-card-delay: 180ms"
+                  >
+                    <div class="review-sticker-badge">
+                      <span class="material-symbol" aria-hidden="true">thumb_up</span>
+                    </div>
+                    <h3>本次表达的优点</h3>
+                    <ul>
+                      <li
+                        v-for="item in toSafeArray(reviewResponse.strengths)"
+                        :key="`strength-${item}`"
+                      >
+                        {{ item }}
+                      </li>
+                    </ul>
+                  </article>
+
+                  <article
+                    class="review-sticker-card review-sticker-risk review-card-reveal-item pop-card pop-shadow"
+                    style="--review-card-delay: 260ms"
+                  >
+                    <div class="review-sticker-badge">
+                      <span class="material-symbol" aria-hidden="true">priority_high</span>
+                    </div>
+                    <h3>可能引发防御心理的表述</h3>
+                    <ul>
+                      <li v-for="item in toSafeArray(reviewResponse.risks)" :key="`risk-${item}`">
+                        {{ item }}
+                      </li>
+                    </ul>
+                  </article>
+                </div>
+              </section>
+
+              <div class="review-squiggle" aria-hidden="true"></div>
+
+              <section class="review-v2-section review-script-section">
+                <h2>原话 vs 推荐话术</h2>
+                <TransitionGroup name="review-suggestion" tag="div" class="review-suggestion-list">
+                  <article
+                    v-for="(suggestion, index) in suggestionCards"
+                    :key="`${suggestion.message_index}-${suggestion.original_message}-${index}`"
+                    class="review-suggestion-card review-script-card pop-card pop-shadow"
+                    :style="{ '--review-card-delay': `${index * 90}ms` }"
+                  >
+                    <header>
+                      <span>第 {{ suggestion.message_index + 1 }} 条用户表达</span>
+                      <strong>{{ suggestion.issue }}</strong>
+                    </header>
+                    <div class="speech-rewrite-row">
+                      <article class="speech-before">
+                        <p class="rewrite-label">原表达</p>
+                        <p>“{{ originalMessageLabel(suggestion) }}”</p>
+                      </article>
+                      <div class="speech-arrow" aria-hidden="true">
+                        <span class="material-symbol">arrow_forward</span>
+                      </div>
+                      <article class="speech-after">
+                        <p class="rewrite-label">推荐话术</p>
+                        <p>“{{ suggestion.suggested_message }}”</p>
+                      </article>
+                    </div>
+                    <p class="review-suggestion-reason">{{ suggestion.reason }}</p>
+                  </article>
+                </TransitionGroup>
+              </section>
+
+              <section class="review-v2-section review-plan-section">
+                <h2>沟通计划</h2>
+                <div class="review-plan-grid">
+                  <article
+                    v-for="item in communicationPlanItems"
+                    :key="item.title"
+                    class="review-plan-card pop-card pop-shadow"
+                  >
+                    <span class="material-symbol" aria-hidden="true">{{ item.icon }}</span>
+                    <h3>{{ item.title }}</h3>
+                    <p>{{ item.text }}</p>
+                  </article>
+                </div>
+              </section>
+
+              <section class="review-bottom-grid">
+                <article class="review-block pop-card pop-shadow">
+                  <h2>后续行动建议</h2>
+                  <ul>
+                    <li
+                      v-for="item in toSafeArray(reviewResponse.next_steps)"
+                      :key="`next-${item}`"
+                    >
+                      {{ item }}
+                    </li>
+                  </ul>
+                </article>
+              </section>
+
+              <p class="review-note">
+                {{
+                  reviewResponse.safety_note ||
+                  '本建议仅用于沟通练习，不作为心理诊断依据；如存在现实安全风险，请优先寻求线下支持。'
+                }}
+              </p>
+            </div>
+          </Transition>
 
           <section class="review-actions">
-            <RouterLink class="primary-action pop-shadow" :to="{ name: 'simulate' }">
+            <button class="primary-action pop-shadow" type="button" @click="practiceAgain">
               再次演练
               <span class="action-icon material-symbol">refresh</span>
-            </RouterLink>
+            </button>
+            <button class="secondary-action pop-shadow" type="button" @click="exportReviewMarkdown">
+              导出 Markdown
+              <span class="action-icon material-symbol">download</span>
+            </button>
+            <button
+              class="secondary-action pop-shadow"
+              type="button"
+              :disabled="isExportingImage"
+              @click="exportReviewImage"
+            >
+              {{ isExportingImage ? '正在导出...' : '导出图片' }}
+              <span class="action-icon material-symbol">image</span>
+            </button>
             <RouterLink class="secondary-action pop-shadow" :to="{ name: 'analysis' }">
               查看压力分析
               <span class="action-icon material-symbol">analytics</span>
@@ -758,15 +1347,417 @@ onBeforeUnmount(() => {
               <span class="action-icon material-symbol">archive</span>
             </RouterLink>
           </section>
-
-          <p class="review-note">
-            {{
-              reviewResponse.safety_note ||
-              '本建议仅用于沟通练习，不作为心理诊断依据；如存在现实安全风险，请优先寻求线下支持。'
-            }}
-          </p>
+          <p v-if="reviewExportError" class="review-export-error">{{ reviewExportError }}</p>
         </div>
       </Transition>
     </div>
+
+    <Transition name="review-dialogue-modal" @after-leave="handleDialogueModalAfterLeave">
+      <div
+        v-if="isDialogueModalOpen"
+        class="safety-modal-overlay review-dialogue-modal-overlay"
+        role="presentation"
+        @click.self="closeDialogueModal"
+      >
+        <section
+          ref="dialogueModalRef"
+          class="safety-modal review-dialogue-modal pop-card pop-shadow"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="review-dialogue-modal-title"
+          tabindex="-1"
+          @keydown="handleDialogueModalKeydown"
+        >
+          <button
+            class="modal-close material-symbol"
+            type="button"
+            aria-label="关闭完整对话记录"
+            @click="closeDialogueModal"
+          >
+            close
+          </button>
+          <h2 id="review-dialogue-modal-title">完整对话记录</h2>
+          <p class="review-dialogue-modal-subtitle">
+            {{ dialogueStats.userTurns }} 轮用户表达 ·
+            {{ dialogueStats.roommateReplies }} 条舍友反馈
+          </p>
+          <div class="review-dialogue-list review-dialogue-modal-list">
+            <article
+              v-for="(line, index) in reviewDialogue"
+              :key="`${line.speaker}-${index}-${line.message}`"
+              :class="['review-dialogue-row', { 'review-dialogue-user': line.speaker === 'user' }]"
+            >
+              <div
+                v-if="line.speaker !== 'user'"
+                :class="[
+                  'review-dialogue-avatar',
+                  `review-dialogue-avatar-${dialogueSpeakerInitial(line.speaker).toLowerCase()}`,
+                ]"
+                aria-hidden="true"
+              >
+                {{ dialogueSpeakerInitial(line.speaker) }}
+              </div>
+              <p>
+                <span>{{ dialogueSpeakerLabel(line.speaker) }}</span>
+                “{{ line.message }}”
+              </p>
+            </article>
+          </div>
+        </section>
+      </div>
+    </Transition>
   </main>
 </template>
+
+<style scoped>
+.review-v2-shell {
+  width: min(1180px, 100%);
+}
+
+.review-dialogue-entry-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  min-width: min(100%, 420px);
+  margin: -24px 0 36px;
+  border: 4px solid var(--ink);
+  background: var(--surface-container-low);
+  padding: 16px;
+}
+
+.review-dialogue-entry-card > .material-symbol {
+  display: inline-grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 3px solid var(--ink);
+  border-radius: 999px;
+  background: var(--secondary-soft);
+  box-shadow: 2px 2px 0 0 var(--shadow-dark);
+}
+
+.review-dialogue-entry-card h2,
+.review-dialogue-entry-card p {
+  margin: 0;
+}
+
+.review-dialogue-entry-card h2 {
+  font-size: var(--font-body-lg);
+}
+
+.review-dialogue-entry-card p {
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.review-dialogue-entry-card .secondary-action {
+  min-height: 42px;
+  white-space: nowrap;
+}
+
+.review-workspace {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  align-items: start;
+  gap: 28px;
+}
+
+.review-history-rail {
+  position: sticky;
+  top: 24px;
+  display: grid;
+  gap: 14px;
+  border: 4px solid var(--ink);
+  background: var(--card);
+  padding: 16px;
+}
+
+.review-history-rail.pop-shadow:hover {
+  box-shadow: 4px 4px 0 0 var(--shadow-dark);
+  transform: none;
+}
+
+.review-history-rail header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.review-history-rail header > .material-symbol {
+  display: inline-grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 3px solid var(--ink);
+  border-radius: 10px;
+  background: var(--tertiary);
+  box-shadow: 2px 2px 0 0 var(--shadow-dark);
+}
+
+.review-history-rail h2,
+.review-history-rail p {
+  margin: 0;
+}
+
+.review-history-rail h2 {
+  font-size: 1.1rem;
+}
+
+.review-history-rail header p {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.review-history-list {
+  display: grid;
+  max-height: 420px;
+  gap: 10px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.review-history-item {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 3px solid var(--ink);
+  border-radius: 12px;
+  background: var(--surface-container-low);
+  box-shadow: 2px 2px 0 0 var(--shadow-dark);
+  color: var(--ink);
+  padding: 10px;
+  text-align: left;
+  transition:
+    background-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.review-history-item:hover:not(:disabled),
+.review-history-item.active {
+  background: var(--primary-container);
+  color: #ffffff;
+  box-shadow: 4px 4px 0 0 var(--shadow-dark);
+  transform: translate(-2px, -2px);
+}
+
+.review-history-item:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.review-history-score {
+  display: inline-grid;
+  min-height: 42px;
+  place-items: center;
+  border: 2px solid currentColor;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.review-history-item strong,
+.review-history-item small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.review-history-item strong {
+  white-space: nowrap;
+}
+
+.review-history-item small {
+  display: -webkit-box;
+  margin-top: 4px;
+  color: inherit;
+  opacity: 0.78;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.35;
+}
+
+.review-history-error,
+.review-export-error {
+  margin: 0;
+  border: 3px solid var(--ink);
+  border-radius: 12px;
+  background: var(--error-soft);
+  color: var(--error);
+  padding: 10px 12px;
+  font-weight: 800;
+}
+
+.review-report-export-surface {
+  min-width: 0;
+}
+
+.review-script-card {
+  border-color: var(--primary);
+  box-shadow: 6px 6px 0 0 var(--primary-container);
+}
+
+.review-script-card .speech-rewrite-row {
+  border: 4px solid var(--ink);
+  border-radius: 16px;
+}
+
+.review-script-card .speech-before,
+.review-script-card .speech-after {
+  min-height: 132px;
+}
+
+.review-script-card .speech-after {
+  box-shadow: 5px 5px 0 0 rgba(52, 211, 153, 0.36);
+}
+
+.review-plan-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.review-plan-card {
+  display: grid;
+  gap: 10px;
+  border: 4px solid var(--ink);
+  background: var(--card);
+  padding: 18px;
+}
+
+.review-plan-card > .material-symbol {
+  display: inline-grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 3px solid var(--ink);
+  border-radius: 12px;
+  background: var(--quaternary);
+  box-shadow: 2px 2px 0 0 var(--shadow-dark);
+}
+
+.review-plan-card:nth-child(2) > .material-symbol {
+  background: var(--secondary-soft);
+}
+
+.review-plan-card:nth-child(3) > .material-symbol {
+  background: var(--tertiary);
+}
+
+.review-plan-card h3,
+.review-plan-card p {
+  margin: 0;
+}
+
+.review-plan-card p {
+  color: var(--ink-soft);
+  font-weight: 800;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.review-workspace > .review-actions,
+.review-workspace > .review-export-error {
+  grid-column: 2;
+}
+
+.review-workspace > .review-actions {
+  justify-content: flex-start;
+  margin-top: 0;
+}
+
+.review-dialogue-modal {
+  width: min(720px, calc(100vw - 32px));
+}
+
+.review-dialogue-modal-subtitle {
+  margin: 4px 42px 18px 0;
+  color: var(--ink-soft);
+  font-weight: 800;
+}
+
+.review-dialogue-modal-list {
+  max-height: min(58vh, 560px);
+  overflow-y: auto;
+  padding: 4px 8px 8px 4px;
+}
+
+.review-report-switch-enter-active,
+.review-report-switch-leave-active {
+  transition:
+    opacity 220ms ease,
+    transform 280ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.review-report-switch-enter-from,
+.review-report-switch-leave-to {
+  opacity: 0;
+  transform: translateY(14px) scale(0.985);
+}
+
+.review-dialogue-modal-enter-active,
+.review-dialogue-modal-leave-active {
+  transition: opacity 180ms ease;
+}
+
+.review-dialogue-modal-enter-active .review-dialogue-modal,
+.review-dialogue-modal-leave-active .review-dialogue-modal {
+  transition:
+    opacity 220ms ease,
+    transform 260ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.review-dialogue-modal-enter-from,
+.review-dialogue-modal-leave-to {
+  opacity: 0;
+}
+
+.review-dialogue-modal-enter-from .review-dialogue-modal,
+.review-dialogue-modal-leave-to .review-dialogue-modal {
+  opacity: 0;
+  transform: translateY(18px) scale(0.96);
+}
+
+@media (max-width: 980px) {
+  .review-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .review-history-rail {
+    position: static;
+  }
+
+  .review-history-list {
+    max-height: none;
+  }
+
+  .review-workspace > .review-actions,
+  .review-workspace > .review-export-error {
+    grid-column: 1;
+  }
+}
+
+@media (max-width: 720px) {
+  .review-dialogue-entry-card,
+  .review-plan-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .review-dialogue-entry-card .secondary-action,
+  .review-workspace > .review-actions button,
+  .review-workspace > .review-actions a {
+    width: 100%;
+  }
+
+  .review-history-item {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+}
+</style>

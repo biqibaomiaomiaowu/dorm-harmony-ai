@@ -50,12 +50,7 @@ export const ROOMMATE_PROFILES_STORAGE_KEY = 'dorm-harmony:roommate-profiles:v1'
 
 export type RoommatePresetKey = 'direct' | 'avoidant' | 'harmony'
 export type RoommateTagMode = 'preset' | 'custom'
-export type RoommateAvatarKey =
-  | 'nailong'
-  | 'capybara_lulu'
-  | 'baobaolong'
-  | 'patrick'
-  | 'spongebob'
+export type RoommateAvatarKey = 'nailong' | 'capybara_lulu' | 'baobaolong' | 'patrick' | 'spongebob'
 
 export interface RoommateTraits {
   directness: number
@@ -131,7 +126,12 @@ export class SimulationStreamRequestError extends Error {
   status: number | null
   detail: string
 
-  constructor(message: string, recoverable = false, status: number | null = null, detail = message) {
+  constructor(
+    message: string,
+    recoverable = false,
+    status: number | null = null,
+    detail = message,
+  ) {
     super(message)
     this.name = 'SimulationStreamRequestError'
     this.recoverable = recoverable
@@ -173,6 +173,12 @@ export interface ReviewPerformanceScores {
   resolution: number
 }
 
+export interface CommunicationPlan {
+  opening: string
+  specific_request: string
+  fallback_plan: string
+}
+
 export interface ReviewResponse {
   summary: string
   strengths: string[]
@@ -181,13 +187,19 @@ export interface ReviewResponse {
   rewrite_suggestions: ReviewRewriteSuggestion[]
   rewritten_message: string
   next_steps: string[]
+  communication_plan: CommunicationPlan
   safety_note: string
   is_demo: boolean
   demo_notice: string
 }
 
-type ReviewResponsePayload = Omit<ReviewResponse, 'performance_scores' | 'is_demo' | 'demo_notice'> &
-  Partial<Pick<ReviewResponse, 'performance_scores' | 'is_demo' | 'demo_notice'>>
+type ReviewResponsePayload = Omit<
+  ReviewResponse,
+  'performance_scores' | 'communication_plan' | 'is_demo' | 'demo_notice'
+> &
+  Partial<
+    Pick<ReviewResponse, 'performance_scores' | 'communication_plan' | 'is_demo' | 'demo_notice'>
+  >
 
 export interface ReviewRequest {
   scenario: string
@@ -442,9 +454,7 @@ export function normalizeRoommates(value: unknown): RoommateProfile[] {
         typeof item.personality_tag === 'string' && item.personality_tag.trim()
           ? item.personality_tag.trim()
           : '自定义'
-      const sourceTraits = isRoommateTraits(item.traits)
-        ? item.traits
-        : roommatePresetTraits.direct
+      const sourceTraits = isRoommateTraits(item.traits) ? item.traits : roommatePresetTraits.direct
 
       return {
         id,
@@ -509,15 +519,27 @@ export function mapRoommateToReviewSpeaker(
   const normalized = roommate.trim()
   const compact = normalized.replace(/\s+/g, '')
 
-  if (compact === '舍友A' || compact.toLowerCase() === 'roommatea' || compact.toLowerCase() === 'roommate_a') {
+  if (
+    compact === '舍友A' ||
+    compact.toLowerCase() === 'roommatea' ||
+    compact.toLowerCase() === 'roommate_a'
+  ) {
     return 'roommate_a'
   }
 
-  if (compact === '舍友B' || compact.toLowerCase() === 'roommateb' || compact.toLowerCase() === 'roommate_b') {
+  if (
+    compact === '舍友B' ||
+    compact.toLowerCase() === 'roommateb' ||
+    compact.toLowerCase() === 'roommate_b'
+  ) {
     return 'roommate_b'
   }
 
-  if (compact === '舍友C' || compact.toLowerCase() === 'roommatec' || compact.toLowerCase() === 'roommate_c') {
+  if (
+    compact === '舍友C' ||
+    compact.toLowerCase() === 'roommatec' ||
+    compact.toLowerCase() === 'roommate_c'
+  ) {
     return 'roommate_c'
   }
 
@@ -719,6 +741,13 @@ const demoReviewSteps = [
   '复盘后若持续无效，可联系辅导员或宿管老师协助。',
 ]
 
+const demoCommunicationPlan: CommunicationPlan = {
+  opening: '我想和你聊一下最近晚上休息被影响的事情，我不是想指责你，只是想一起找个办法。',
+  specific_request: '我们能不能约定 11 点后戴耳机或把游戏音量调低，尽量不影响彼此休息？',
+  fallback_plan:
+    '如果今天不方便马上定下来，我们可以明天再聊；如果还是协调不了，再请辅导员或宿管老师帮忙。',
+}
+
 export function buildDemoReviewResponse(reason: string, request: ReviewRequest): ReviewResponse {
   const scene = request.scenario || '近期沟通场景'
   return {
@@ -729,6 +758,7 @@ export function buildDemoReviewResponse(reason: string, request: ReviewRequest):
     rewrite_suggestions: [{ ...reviewSuggestionBypass }],
     rewritten_message: reviewSuggestionBypass.suggested_message,
     next_steps: [...demoReviewSteps],
+    communication_plan: { ...demoCommunicationPlan },
     safety_note: '本复盘仅用于沟通训练建议，不进行医学、心理诊断或人格评价。',
     is_demo: true,
     demo_notice: reason,
@@ -794,7 +824,8 @@ function isSimulationResponsePayload(value: unknown): value is SimulationRespons
   const conversationId = (value as { conversation_id?: unknown }).conversation_id
   const safetyNote = (value as { safety_note?: unknown }).safety_note
   const archiveContextUsed = (value as { archive_context_used?: unknown }).archive_context_used
-  const archiveContextSummary = (value as { archive_context_summary?: unknown }).archive_context_summary
+  const archiveContextSummary = (value as { archive_context_summary?: unknown })
+    .archive_context_summary
   const isDemo = (value as { is_demo?: unknown }).is_demo
   const demoNotice = (value as { demo_notice?: unknown }).demo_notice
   const hasCompatibleSourceFields =
@@ -869,7 +900,19 @@ function isReviewPerformanceScores(value: unknown): value is ReviewPerformanceSc
   )
 }
 
-function isReviewResponsePayload(value: unknown): value is ReviewResponsePayload {
+function isCommunicationPlan(value: unknown): value is CommunicationPlan {
+  if (!isRecord(value)) {
+    return false
+  }
+
+  return (
+    typeof value.opening === 'string' &&
+    typeof value.specific_request === 'string' &&
+    typeof value.fallback_plan === 'string'
+  )
+}
+
+export function isReviewResponsePayload(value: unknown): value is ReviewResponsePayload {
   if (!isRecord(value)) {
     return false
   }
@@ -881,6 +924,7 @@ function isReviewResponsePayload(value: unknown): value is ReviewResponsePayload
   const rewriteSuggestions = (value as { rewrite_suggestions?: unknown }).rewrite_suggestions
   const rewrittenMessage = (value as { rewritten_message?: unknown }).rewritten_message
   const nextSteps = (value as { next_steps?: unknown }).next_steps
+  const communicationPlan = (value as { communication_plan?: unknown }).communication_plan
   const safetyNote = (value as { safety_note?: unknown }).safety_note
   const isDemo = (value as { is_demo?: unknown }).is_demo
   const demoNotice = (value as { demo_notice?: unknown }).demo_notice
@@ -897,6 +941,7 @@ function isReviewResponsePayload(value: unknown): value is ReviewResponsePayload
       (Array.isArray(rewriteSuggestions) && rewriteSuggestions.every(isReviewRewriteSuggestion))) &&
     (typeof rewrittenMessage === 'undefined' || typeof rewrittenMessage === 'string') &&
     isStringArray(nextSteps) &&
+    (typeof communicationPlan === 'undefined' || isCommunicationPlan(communicationPlan)) &&
     typeof safetyNote === 'string' &&
     hasCompatibleSourceFields
   )
@@ -910,7 +955,8 @@ export function isReviewResponse(value: unknown): value is ReviewResponse {
   return (
     typeof (value as { is_demo?: unknown }).is_demo === 'boolean' &&
     typeof (value as { demo_notice?: unknown }).demo_notice === 'string' &&
-    isReviewPerformanceScores((value as { performance_scores?: unknown }).performance_scores)
+    isReviewPerformanceScores((value as { performance_scores?: unknown }).performance_scores) &&
+    isCommunicationPlan((value as { communication_plan?: unknown }).communication_plan)
   )
 }
 
@@ -939,10 +985,7 @@ export function isStoredReviewResult(value: unknown): value is StoredReviewResul
   return true
 }
 
-function normalizeRewrittenMessage(
-  raw: unknown,
-  suggestions: ReviewRewriteSuggestion[],
-): string {
+function normalizeRewrittenMessage(raw: unknown, suggestions: ReviewRewriteSuggestion[]): string {
   if (typeof raw === 'string' && raw.trim().length > 0) {
     return raw
   }
@@ -978,7 +1021,24 @@ function normalizeRewriteSuggestions(
   return [{ ...reviewSuggestionBypass }]
 }
 
-function normalizeReviewResponse(raw: {
+function normalizeCommunicationPlan(raw: unknown, rewrittenMessage: string): CommunicationPlan {
+  if (isCommunicationPlan(raw)) {
+    return {
+      opening: raw.opening.trim() || demoCommunicationPlan.opening,
+      specific_request:
+        raw.specific_request.trim() || rewrittenMessage || demoCommunicationPlan.specific_request,
+      fallback_plan: raw.fallback_plan.trim() || demoCommunicationPlan.fallback_plan,
+    }
+  }
+
+  return {
+    opening: demoCommunicationPlan.opening,
+    specific_request: rewrittenMessage || demoCommunicationPlan.specific_request,
+    fallback_plan: demoCommunicationPlan.fallback_plan,
+  }
+}
+
+export function normalizeReviewResponse(raw: {
   summary?: unknown
   strengths?: unknown
   risks?: unknown
@@ -986,6 +1046,7 @@ function normalizeReviewResponse(raw: {
   rewrite_suggestions?: unknown
   rewritten_message?: unknown
   next_steps?: unknown
+  communication_plan?: unknown
   safety_note?: unknown
   is_demo?: unknown
   demo_notice?: unknown
@@ -994,6 +1055,7 @@ function normalizeReviewResponse(raw: {
     raw.rewrite_suggestions,
     raw.rewritten_message,
   )
+  const rewrittenMessage = normalizeRewrittenMessage(raw.rewritten_message, rewriteSuggestions)
 
   return {
     summary: typeof raw.summary === 'string' ? raw.summary : '后端返回结构异常，已用本地兜底展示。',
@@ -1001,19 +1063,17 @@ function normalizeReviewResponse(raw: {
       isStringArray(raw.strengths) && raw.strengths.length > 0
         ? raw.strengths
         : [...demoReviewStrengths],
-    risks:
-      isStringArray(raw.risks) && raw.risks.length > 0
-        ? raw.risks
-        : [...demoReviewRisks],
+    risks: isStringArray(raw.risks) && raw.risks.length > 0 ? raw.risks : [...demoReviewRisks],
     performance_scores: isReviewPerformanceScores(raw.performance_scores)
       ? raw.performance_scores
       : { ...demoReviewPerformanceScores },
     rewrite_suggestions: rewriteSuggestions,
-    rewritten_message: normalizeRewrittenMessage(raw.rewritten_message, rewriteSuggestions),
+    rewritten_message: rewrittenMessage,
     next_steps:
       isStringArray(raw.next_steps) && raw.next_steps.length > 0
         ? raw.next_steps
         : [...demoReviewSteps],
+    communication_plan: normalizeCommunicationPlan(raw.communication_plan, rewrittenMessage),
     safety_note:
       typeof raw.safety_note === 'string' ? raw.safety_note : '本复盘仅用于沟通训练建议。',
     is_demo: typeof raw.is_demo === 'boolean' ? raw.is_demo : false,
@@ -1158,7 +1218,10 @@ export async function submitSimulationRequest(
 
     return normalizeSimulationResponse(raw)
   } catch (error) {
-    if (error instanceof SimulationRequestError || (error instanceof Error && error.name === 'AbortError')) {
+    if (
+      error instanceof SimulationRequestError ||
+      (error instanceof Error && error.name === 'AbortError')
+    ) {
       throw error
     }
 
