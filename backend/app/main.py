@@ -17,7 +17,7 @@ from app.ai_service import (
 )
 from app.archive_analysis import analyze_archive_pressure
 from app.env import load_project_env
-from app.event_store import JsonEventStore
+from app.event_store import EventStore, SQLiteEventStore
 from app.schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
@@ -65,12 +65,12 @@ def get_ai_service() -> DormHarmonyAIService:
     return DormHarmonyAIService(memory=_SHARED_CONVERSATION_MEMORY)
 
 
-def get_event_store() -> JsonEventStore:
+def get_event_store() -> SQLiteEventStore:
     """FastAPI 依赖注入入口，测试中可覆盖事件档案存储。"""
-    return JsonEventStore()
+    return SQLiteEventStore()
 
 
-def _build_archive_context_summary(event_store: JsonEventStore) -> str | None:
+def _build_archive_context_summary(event_store: EventStore) -> str | None:
     """为模拟路由生成受控、短文本的事件档案摘要。"""
     events = event_store.list()
     if not events:
@@ -123,7 +123,7 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
 @app.post("/api/events", response_model=EventRecord)
 def create_event_record(
     request: EventRecordCreate,
-    event_store: JsonEventStore = Depends(get_event_store),
+    event_store: EventStore = Depends(get_event_store),
 ) -> EventRecord:
     """保存一条事件档案，并同步生成单条事件压力分析快照。"""
     return event_store.add(request)
@@ -131,7 +131,7 @@ def create_event_record(
 
 @app.get("/api/events", response_model=EventArchiveResponse)
 def list_event_records(
-    event_store: JsonEventStore = Depends(get_event_store),
+    event_store: EventStore = Depends(get_event_store),
 ) -> EventArchiveResponse:
     """返回当前事件档案列表，不调用 AI 服务。"""
     return EventArchiveResponse(events=event_store.list())
@@ -140,7 +140,7 @@ def list_event_records(
 @app.delete("/api/events/{event_id}", status_code=204)
 def delete_event_record(
     event_id: str,
-    event_store: JsonEventStore = Depends(get_event_store),
+    event_store: EventStore = Depends(get_event_store),
 ) -> None:
     """删除一条事件档案；派生压力和 AI 见解由前端重新请求。"""
     if not event_store.delete(event_id):
@@ -152,7 +152,7 @@ def delete_event_record(
 
 @app.get("/api/events/analysis", response_model=ArchiveAnalysisResponse)
 def analyze_event_archive(
-    event_store: JsonEventStore = Depends(get_event_store),
+    event_store: EventStore = Depends(get_event_store),
 ) -> ArchiveAnalysisResponse:
     """汇总事件档案并返回总压力分析，不调用 AI 服务。"""
     return analyze_archive_pressure(event_store.list())
@@ -160,7 +160,7 @@ def analyze_event_archive(
 
 @app.post("/api/events/insight", response_model=ArchiveInsightResponse)
 def archive_insight(
-    event_store: JsonEventStore = Depends(get_event_store),
+    event_store: EventStore = Depends(get_event_store),
     ai_service: DormHarmonyAIService = Depends(get_ai_service),
 ) -> ArchiveInsightResponse:
     """基于事件档案和总压力分析生成 AI 心晴见解。"""
@@ -186,7 +186,7 @@ def archive_insight(
 def simulate(
     request: SimulateRequest,
     ai_service: DormHarmonyAIService = Depends(get_ai_service),
-    event_store: JsonEventStore = Depends(get_event_store),
+    event_store: EventStore = Depends(get_event_store),
 ) -> SimulateResponse:
     """调用 AI 服务生成三位虚拟舍友的结构化模拟回复。"""
     try:
@@ -216,7 +216,7 @@ def _encode_ndjson_event(event: dict[str, object]) -> str:
 def simulate_stream(
     request: SimulateRequest,
     ai_service: DormHarmonyAIService = Depends(get_ai_service),
-    event_store: JsonEventStore = Depends(get_event_store),
+    event_store: EventStore = Depends(get_event_store),
 ) -> StreamingResponse:
     """以 start、reply、final 顺序流式返回沟通模拟结果。"""
     try:

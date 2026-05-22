@@ -236,7 +236,15 @@ def create_noise_event_for_archive():
 
 
 @pytest.fixture(autouse=True)
-def clear_dependency_overrides():
+def clear_dependency_overrides(monkeypatch, tmp_path):
+    monkeypatch.setenv(
+        "DORM_HARMONY_SQLITE_PATH",
+        str(tmp_path / "dorm_harmony.sqlite3"),
+    )
+    monkeypatch.setenv(
+        "DORM_HARMONY_EVENT_STORE_PATH",
+        str(tmp_path / "missing-events.json"),
+    )
     app.dependency_overrides.pop(get_ai_service, None)
     app.dependency_overrides.pop(get_event_store, None)
     yield
