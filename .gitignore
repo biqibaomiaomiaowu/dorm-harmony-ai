@@ -5,6 +5,7 @@ AGENTS.md
 .env
 .env:Zone.Identifier
 *:Zone.Identifier
+/node_modules/
 
 # Python backend
 __pycache__/
