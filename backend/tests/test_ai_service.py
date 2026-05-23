@@ -1,5 +1,6 @@
 from datetime import date, datetime
 import sys
+from threading import Event, Thread
 import types
 
 import pytest
@@ -478,6 +479,40 @@ def test_conversation_memory_uses_langgraph_in_memory_saver():
     assert isinstance(memory.checkpointer, InMemorySaver)
 
 
+def test_conversation_memory_persists_with_sqlite_checkpointer(tmp_path):
+    db_path = tmp_path / "memory.sqlite3"
+    first_memory = ai_service.ConversationMemory.sqlite(db_path)
+    service = DormHarmonyAIService(runner=FakeRunner(), memory=first_memory)
+
+    first = service.simulate(
+        SimulateRequest(
+            scenario="噪音冲突",
+            user_message="晚上能不能小声一点？",
+        )
+    )
+
+    second_memory = ai_service.ConversationMemory.sqlite(db_path)
+    dialogue = second_memory.get_dialogue(first.conversation_id)
+
+    assert any(
+        line.speaker == "user" and "小声" in line.message
+        for line in dialogue
+    )
+
+
+def test_conversation_memory_persists_latest_turn_with_sqlite(tmp_path):
+    db_path = tmp_path / "memory.sqlite3"
+    first_memory = ai_service.ConversationMemory.sqlite(db_path)
+    conversation_id = first_memory.start_conversation()
+
+    first_memory.mark_latest_turn(conversation_id, "turn-1")
+
+    second_memory = ai_service.ConversationMemory.sqlite(db_path)
+
+    assert second_memory.is_latest_turn(conversation_id, "turn-1") is True
+    assert second_memory.is_latest_turn(conversation_id, "turn-2") is False
+
+
 def test_service_returns_conversation_id_and_persists_turn_memory():
     request = SimulateRequest(scenario="噪音冲突", user_message="晚上能不能小声一点？")
     runner = ScriptedMultiAgentRunner(
@@ -758,6 +793,133 @@ def test_service_does_not_write_user_message_when_generation_fails():
     assert [message.message for message in dialogue] == ["第一轮先沟通。"]
 
 
+def test_stale_user_turn_does_not_write_after_newer_turn_is_marked():
+    memory = ai_service.ConversationMemory()
+    conversation_id = memory.start_conversation()
+
+    class NewerTurnRunner(ScriptedMultiAgentRunner):
+        def generate_roommate_reply(
+            self,
+            request,
+            history,
+            archive_context_summary,
+            same_turn_replies,
+            roommate,
+        ):
+            memory.mark_latest_turn(conversation_id, "turn-newer")
+            return super().generate_roommate_reply(
+                request,
+                history,
+                archive_context_summary,
+                same_turn_replies,
+                roommate,
+            )
+
+    service = DormHarmonyAIService(runner=NewerTurnRunner(), memory=memory)
+
+    response = service.simulate(
+        SimulateRequest(
+            conversation_id=conversation_id,
+            turn_id="turn-old",
+            scenario="噪音冲突",
+            user_message="旧的一轮表达不应再写入。",
+        )
+    )
+
+    assert response.replies == []
+    assert memory.get_dialogue(conversation_id) == []
+    assert memory.is_latest_turn(conversation_id, "turn-newer") is True
+
+
+def test_new_user_turn_marks_latest_while_old_continuation_is_generating():
+    memory = ai_service.ConversationMemory()
+    conversation_id = memory.start_conversation()
+    memory.mark_latest_turn(conversation_id, "turn-old")
+    memory.append_user_message(conversation_id, "先说一轮。")
+    generation_started = Event()
+    allow_old_generation_to_finish = Event()
+    old_result: dict[str, object] = {}
+    new_result: dict[str, object] = {}
+
+    class BlockingRunner:
+        def plan_simulation_replies(self, request, history, archive_context_summary=None):
+            return ai_service.SpeakerPlanResponse(
+                replies=[ai_service.SpeakerPlanItem(roommate_id="roommate_a")]
+            )
+
+        def generate_roommate_reply(
+            self,
+            request,
+            history,
+            archive_context_summary,
+            same_turn_replies,
+            roommate,
+        ):
+            if request.is_continuation:
+                generation_started.set()
+                assert allow_old_generation_to_finish.wait(timeout=2)
+                return RoommateReply(
+                    roommate_id="roommate_a",
+                    roommate="舍友 A",
+                    personality="直接型",
+                    message="旧 continuation 回复不应写入。",
+                )
+
+            return RoommateReply(
+                roommate_id="roommate_a",
+                roommate="舍友 A",
+                personality="直接型",
+                message="新一轮回复应写入。",
+            )
+
+    service = DormHarmonyAIService(runner=BlockingRunner(), memory=memory)
+
+    def run_old_continuation():
+        old_result["response"] = service.simulate(
+            SimulateRequest(
+                conversation_id=conversation_id,
+                turn_id="turn-old",
+                scenario="噪音冲突",
+                is_continuation=True,
+                max_replies=1,
+            )
+        )
+
+    def run_new_turn():
+        new_result["response"] = service.simulate(
+            SimulateRequest(
+                conversation_id=conversation_id,
+                turn_id="turn-new",
+                scenario="噪音冲突",
+                user_message="这是新的一轮表达。",
+                max_replies=1,
+            )
+        )
+
+    old_thread = Thread(target=run_old_continuation)
+    old_thread.start()
+    assert generation_started.wait(timeout=2)
+
+    new_thread = Thread(target=run_new_turn)
+    new_thread.start()
+    allow_old_generation_to_finish.set()
+    old_thread.join(timeout=2)
+    new_thread.join(timeout=2)
+
+    assert not old_thread.is_alive()
+    assert not new_thread.is_alive()
+    assert isinstance(old_result["response"], SimulateResponse)
+    assert isinstance(new_result["response"], SimulateResponse)
+    assert old_result["response"].replies == []
+    assert [reply.message for reply in new_result["response"].replies] == ["新一轮回复应写入。"]
+    assert [line.message for line in memory.get_dialogue(conversation_id)] == [
+        "先说一轮。",
+        "这是新的一轮表达。",
+        "新一轮回复应写入。",
+    ]
+    assert memory.is_latest_turn(conversation_id, "turn-new") is True
+
+
 def test_continuation_does_not_append_user_message_and_respects_max_replies():
     memory = ai_service.ConversationMemory()
     conversation_id = memory.start_conversation()
@@ -818,7 +980,38 @@ def test_service_returns_review_from_runner():
     assert response.strengths
     assert response.performance_scores.clarity == 82
     assert response.rewrite_suggestions[0].message_index == 0
+    assert response.communication_plan.opening
+    assert response.communication_plan.specific_request
+    assert response.communication_plan.fallback_plan
     assert "不进行心理诊断" in response.safety_note
+
+
+def test_review_with_dialogue_result_exposes_actual_dialogue():
+    service = DormHarmonyAIService(runner=FakeRunner(), memory=ai_service.ConversationMemory())
+
+    result = service.review_with_dialogue(
+        ReviewRequest(
+            scenario="噪音冲突",
+            dialogue=[DialogueMessage(speaker="user", message="晚上能不能小声一点？")],
+        )
+    )
+
+    assert result.response.summary
+    assert result.dialogue[0].speaker == "user"
+    assert result.dialogue[0].message == "晚上能不能小声一点？"
+
+
+def test_resolve_review_dialogue_is_public_for_routes():
+    service = DormHarmonyAIService(runner=FakeRunner(), memory=ai_service.ConversationMemory())
+
+    dialogue = service.resolve_review_dialogue(
+        ReviewRequest(
+            scenario="噪音冲突",
+            dialogue=[DialogueMessage(speaker="user", message="晚上能不能小声一点？")],
+        )
+    )
+
+    assert dialogue[0].speaker == "user"
 
 
 def test_review_uses_memory_dialogue_and_returns_multi_rewrites():
@@ -983,6 +1176,28 @@ def test_review_recovers_nullable_and_mixed_ai_draft_fields():
     assert "仅用于沟通训练建议" in response.safety_note
 
 
+def test_review_response_includes_fallback_communication_plan():
+    class DraftRunnerWithoutPlan:
+        def generate_review(self, request, dialogue):
+            return make_review_response_payload()
+
+    service = DormHarmonyAIService(
+        runner=DraftRunnerWithoutPlan(),
+        memory=ai_service.ConversationMemory(),
+    )
+
+    response = service.review(
+        ReviewRequest(
+            scenario="噪音冲突",
+            dialogue=[DialogueMessage(speaker="user", message="晚上能不能小声一点？")],
+        )
+    )
+
+    assert response.communication_plan.opening
+    assert "11 点后" in response.communication_plan.specific_request
+    assert response.communication_plan.fallback_plan
+
+
 def test_service_normalizes_generated_reply_identity_to_requested_roommate_profile():
     request = SimulateRequest(scenario="噪音冲突", user_message="晚上能不能小声一点？")
     runner = ScriptedMultiAgentRunner(
@@ -1001,6 +1216,67 @@ def test_service_normalizes_generated_reply_identity_to_requested_roommate_profi
 
     assert response.replies[0].roommate == "舍友 A"
     assert response.replies[0].personality == "直接型"
+
+
+def test_service_replaces_internal_roommate_references_in_reply_message():
+    request = SimulateRequest(
+        scenario="卫生值日",
+        user_message="今天垃圾谁倒？",
+        roommates=[
+            {
+                "id": "roommate_aa",
+                "name": "小安",
+                "personality_tag": "直接型",
+                "tag_mode": "custom",
+                "traits": {
+                    "directness": 4,
+                    "emotional_reactivity": 2,
+                    "avoidance": 1,
+                    "empathy": 3,
+                    "solution_willingness": 4,
+                    "boundary_sensitivity": 2,
+                },
+            },
+            {
+                "id": "roommate_c",
+                "name": "小陈",
+                "personality_tag": "调和型",
+                "tag_mode": "preset",
+                "preset_key": "harmony",
+            },
+        ],
+    )
+    runner = ScriptedMultiAgentRunner(
+        plan=[{"roommate_id": "roommate_c"}],
+        replies=[
+            {
+                "roommate_id": "roommate_c",
+                "roommate": "roommate_c",
+                "personality": "调和型",
+                "message": "你（roommate_c）倒垃圾，其他人各自收拾桌面，行不？以后值日表就按aa说的。",
+            }
+        ],
+    )
+    service = DormHarmonyAIService(runner=runner, memory=ai_service.ConversationMemory())
+
+    response = service.simulate(request)
+
+    assert response.replies[0].roommate == "小陈"
+    assert response.replies[0].message == "你（小陈）倒垃圾，其他人各自收拾桌面，行不？以后值日表就按小安说的。"
+    assert "roommate_c" not in response.replies[0].message
+    assert "aa" not in response.replies[0].message
+
+
+def test_internal_roommate_reference_replacement_keeps_longer_unknown_tokens():
+    roommate = default_roommate_profiles()[2]
+    roommate_by_id = {roommate.id: roommate}
+
+    message = ai_service._replace_internal_roommate_references(
+        "roommate_c 可以协调，但 roommate_c_extra 不是当前舍友。",
+        roommate_by_id,
+    )
+
+    assert message == "舍友 C 可以协调，但 roommate_c_extra 不是当前舍友。"
 
 
 def test_service_rejects_generated_reply_for_different_planned_roommate():

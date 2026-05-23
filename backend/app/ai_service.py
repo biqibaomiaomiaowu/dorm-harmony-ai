@@ -3,8 +3,13 @@
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import logging
 import os
+from pathlib import Path
 import re
+import sqlite3
+from threading import RLock
 from typing import Annotated, Protocol, TypedDict, TypeVar
 from uuid import uuid4
 
@@ -24,6 +29,7 @@ from app.env import load_project_env
 from app.schemas import (
     ArchiveAnalysisResponse,
     ArchiveInsightResponse,
+    CommunicationPlan,
     DialogueMessage,
     EventRecord,
     ReviewPerformanceScores,
@@ -136,6 +142,9 @@ _REVIEW_ORIGINAL_MESSAGE_MAX_LENGTH = 500
 _REVIEW_SUGGESTED_MESSAGE_MAX_LENGTH = 500
 _REVIEW_ISSUE_MAX_LENGTH = 300
 _REVIEW_REASON_MAX_LENGTH = 300
+logger = logging.getLogger(__name__)
+_CONVERSATION_OPERATION_LOCKS_GUARD = RLock()
+_CONVERSATION_OPERATION_LOCKS: dict[str, RLock] = {}
 _IMPROVABLE_USER_MESSAGE_KEYWORDS = (
     "傻",
     "闭嘴",
@@ -200,6 +209,14 @@ class ReviewPerformanceScoresDraft(BaseModel):
     resolution: object | None = None
 
 
+class ReviewCommunicationPlanDraft(BaseModel):
+    """AI 复盘沟通计划草稿，允许缺项后由服务层兜底。"""
+
+    opening: object | None = None
+    specific_request: object | None = None
+    fallback_plan: object | None = None
+
+
 class ReviewDraftResponse(BaseModel):
     """AI 复盘草稿响应；最终仍会收敛为严格 ReviewResponse。"""
 
@@ -210,14 +227,23 @@ class ReviewDraftResponse(BaseModel):
     rewrite_suggestions: list[ReviewRewriteSuggestionDraft] | None = None
     rewritten_message: object | None = None
     next_steps: list[object] | None = None
+    communication_plan: ReviewCommunicationPlanDraft | None = None
     safety_note: object | None = None
+
+
+@dataclass(frozen=True)
+class ReviewWithDialogueResult:
+    """服务层复盘结果，同时暴露实际用于 AI 复盘的 dialogue 快照。"""
+
+    response: ReviewResponse
+    dialogue: list[DialogueMessage]
 
 
 class _ConversationState(TypedDict):
     messages: Annotated[list, add_messages]
 
 
-def _create_memory_graph(checkpointer: InMemorySaver):
+def _create_memory_graph(checkpointer):
     """创建一个只用于 LangGraph checkpointer 存取消息的极小图。"""
 
     def passthrough(state: _ConversationState) -> dict[str, list]:
@@ -231,36 +257,95 @@ def _create_memory_graph(checkpointer: InMemorySaver):
 
 
 class ConversationMemory:
-    """基于 LangGraph InMemorySaver 的单进程短期会话记忆。"""
+    """基于 LangGraph checkpointer 的短期会话记忆。"""
 
-    def __init__(self, checkpointer: InMemorySaver | None = None) -> None:
+    def __init__(
+        self,
+        checkpointer: InMemorySaver | None = None,
+        *,
+        sqlite_connection: sqlite3.Connection | None = None,
+    ) -> None:
         self.checkpointer = checkpointer or InMemorySaver()
+        self._sqlite_connection = sqlite_connection
+        self._lock = RLock()
         self._graph = _create_memory_graph(self.checkpointer)
         self._conversation_ids: set[str] = set()
         self._latest_turn_ids: dict[str, str] = {}
+        if self._sqlite_connection is not None:
+            self._ensure_sqlite_schema()
+
+    @classmethod
+    def sqlite(cls, path: Path) -> "ConversationMemory":
+        """创建 SQLite-backed LangGraph 会话记忆。"""
+        os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
+        from langgraph.checkpoint.sqlite import SqliteSaver
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(path, check_same_thread=False, timeout=5)
+        connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute("PRAGMA journal_mode = WAL")
+        checkpointer = SqliteSaver(connection)
+        checkpointer.setup()
+        return cls(checkpointer=checkpointer, sqlite_connection=connection)
 
     def start_conversation(self, conversation_id: str | None = None) -> str:
         """创建或登记一条短期会话。"""
         resolved_id = (conversation_id or str(uuid4())).strip()
         if not resolved_id:
             resolved_id = str(uuid4())
-        self._conversation_ids.add(resolved_id)
+        with self._lock:
+            if self._sqlite_connection is None:
+                self._conversation_ids.add(resolved_id)
+            else:
+                self._insert_conversation_meta_if_missing(resolved_id)
         return resolved_id
 
     def has_conversation(self, conversation_id: str) -> bool:
-        """判断当前进程内是否登记过该会话。"""
-        return conversation_id in self._conversation_ids
+        """判断是否登记过该会话。"""
+        with self._lock:
+            if self._sqlite_connection is None:
+                return conversation_id in self._conversation_ids
+
+            cursor = self._sqlite_connection.execute(
+                """
+                SELECT 1
+                FROM conversation_meta
+                WHERE conversation_id = ?
+                """,
+                (conversation_id,),
+            )
+            return cursor.fetchone() is not None
 
     def mark_latest_turn(self, conversation_id: str, turn_id: str | None) -> None:
         """记录当前会话最新用户回合，用于丢弃过期 continuation。"""
-        if turn_id:
-            self._latest_turn_ids[conversation_id] = turn_id
+        if not turn_id:
+            return
+
+        with self._lock:
+            if self._sqlite_connection is None:
+                self._latest_turn_ids[conversation_id] = turn_id
+            else:
+                self._upsert_conversation_latest_turn(conversation_id, turn_id)
 
     def is_latest_turn(self, conversation_id: str, turn_id: str | None) -> bool:
         """判断请求是否仍属于当前最新用户回合。"""
         if not turn_id:
             return True
-        return self._latest_turn_ids.get(conversation_id) in {None, turn_id}
+        with self._lock:
+            if self._sqlite_connection is None:
+                return self._latest_turn_ids.get(conversation_id) in {None, turn_id}
+
+            cursor = self._sqlite_connection.execute(
+                """
+                SELECT latest_turn_id
+                FROM conversation_meta
+                WHERE conversation_id = ?
+                """,
+                (conversation_id,),
+            )
+            row = cursor.fetchone()
+            latest_turn_id = row[0] if row is not None else None
+            return latest_turn_id in {None, turn_id}
 
     def append_user_message(self, conversation_id: str, message: str) -> None:
         """追加用户消息。"""
@@ -321,19 +406,167 @@ class ConversationMemory:
 
         return counts
 
+    def close(self) -> None:
+        """关闭 SQLite-backed memory 持有的连接；内存模式无操作。"""
+        with self._lock:
+            if self._sqlite_connection is not None:
+                self._sqlite_connection.close()
+                self._sqlite_connection = None
+
     def _append_message(self, conversation_id: str, message: BaseMessage) -> None:
-        self.start_conversation(conversation_id)
-        self._graph.update_state(
-            self._config(conversation_id),
-            {"messages": [message]},
-        )
+        with self._lock:
+            self.start_conversation(conversation_id)
+            try:
+                self._graph.update_state(
+                    self._config(conversation_id),
+                    {"messages": [message]},
+                )
+            except Exception:
+                self._delete_conversation_meta_if_checkpoint_empty(conversation_id)
+                raise
+            self._touch_conversation_meta_best_effort(conversation_id)
 
     def _get_messages(self, conversation_id: str) -> list[BaseMessage]:
-        state = self._graph.get_state(self._config(conversation_id))
-        return list(state.values.get("messages", []))
+        with self._lock:
+            state = self._graph.get_state(self._config(conversation_id))
+            return list(state.values.get("messages", []))
 
     def _config(self, conversation_id: str) -> dict[str, dict[str, str]]:
         return {"configurable": {"thread_id": conversation_id}}
+
+    def _ensure_sqlite_schema(self) -> None:
+        """创建会话元数据表。"""
+        if self._sqlite_connection is None:
+            return
+
+        with self._lock:
+            self._sqlite_connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_meta (
+                    conversation_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    latest_turn_id TEXT
+                )
+                """
+            )
+            self._sqlite_connection.commit()
+
+    def _insert_conversation_meta_if_missing(self, conversation_id: str) -> None:
+        """首次登记会话元数据，不覆盖已有 latest_turn。"""
+        if self._sqlite_connection is None:
+            return
+
+        now = _utc_now_iso()
+        self._sqlite_connection.execute(
+            """
+            INSERT INTO conversation_meta (
+                conversation_id,
+                created_at,
+                updated_at,
+                latest_turn_id
+            )
+            VALUES (?, ?, ?, NULL)
+            ON CONFLICT(conversation_id) DO NOTHING
+            """,
+            (conversation_id, now, now),
+        )
+        self._sqlite_connection.commit()
+
+    def _upsert_conversation_latest_turn(
+        self,
+        conversation_id: str,
+        turn_id: str,
+    ) -> None:
+        """持久化指定会话的最新用户回合。"""
+        if self._sqlite_connection is None:
+            return
+
+        now = _utc_now_iso()
+        self._sqlite_connection.execute(
+            """
+            INSERT INTO conversation_meta (
+                conversation_id,
+                created_at,
+                updated_at,
+                latest_turn_id
+            )
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(conversation_id) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                latest_turn_id = excluded.latest_turn_id
+            """,
+            (conversation_id, now, now, turn_id),
+        )
+        self._sqlite_connection.commit()
+
+    def _touch_conversation_meta_best_effort(self, conversation_id: str) -> None:
+        """checkpoint 写入后刷新会话更新时间；失败不回滚已写入消息。"""
+        if self._sqlite_connection is None:
+            return
+
+        try:
+            self._sqlite_connection.execute(
+                """
+                UPDATE conversation_meta
+                SET updated_at = ?
+                WHERE conversation_id = ?
+                """,
+                (_utc_now_iso(), conversation_id),
+            )
+            self._sqlite_connection.commit()
+        except Exception:
+            logger.exception(
+                "Failed to refresh conversation metadata for %s after checkpoint write",
+                conversation_id,
+            )
+
+    def _delete_conversation_meta_if_checkpoint_empty(self, conversation_id: str) -> None:
+        """checkpoint 写入失败且没有任何消息时，清理空会话元数据。"""
+        if self._sqlite_connection is None:
+            return
+
+        try:
+            state = self._graph.get_state(self._config(conversation_id))
+            if state.values.get("messages"):
+                return
+            self._sqlite_connection.execute(
+                "DELETE FROM conversation_meta WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            self._sqlite_connection.commit()
+        except Exception:
+            logger.exception(
+                "Failed to clean empty conversation metadata for %s after checkpoint error",
+                conversation_id,
+            )
+
+
+def _utc_now_iso() -> str:
+    """返回 SQLite 元数据使用的 UTC ISO 时间。"""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _get_conversation_operation_lock(conversation_id: str) -> RLock:
+    """按会话 id 复用操作锁，串行化一次模拟的读、生成和写入。"""
+    with _CONVERSATION_OPERATION_LOCKS_GUARD:
+        if conversation_id not in _CONVERSATION_OPERATION_LOCKS:
+            _CONVERSATION_OPERATION_LOCKS[conversation_id] = RLock()
+        return _CONVERSATION_OPERATION_LOCKS[conversation_id]
+
+
+def _empty_simulate_response(
+    conversation_id: str,
+    archive_context_summary: str | None,
+) -> SimulateResponse:
+    """返回不写入任何新消息的空模拟结果。"""
+    return SimulateResponse(
+        conversation_id=conversation_id,
+        replies=[],
+        archive_context_used=archive_context_summary is not None,
+        archive_context_summary=archive_context_summary,
+        safety_note=SIMULATE_SAFETY_NOTE,
+    )
 
 
 def _message_to_dialogue(message: BaseMessage) -> DialogueMessage:
@@ -528,16 +761,24 @@ class DormHarmonyAIService:
 
     def review(self, request: ReviewRequest) -> ReviewResponse:
         """生成沟通复盘结果，并保证返回值符合 ReviewResponse。"""
+        return self.review_with_dialogue(request).response
+
+    def review_with_dialogue(self, request: ReviewRequest) -> ReviewWithDialogueResult:
+        """生成复盘结果，并返回实际用于复盘的 dialogue，供路由持久化。"""
         public_error: AIServiceUnavailableError | None = None
-        result: object | None = None
+        result: ReviewWithDialogueResult | None = None
 
         try:
-            dialogue = self._resolve_review_dialogue(request)
+            dialogue = self.resolve_review_dialogue(request)
             self._validate_review_dialogue_has_user_message(dialogue)
             draft = _ensure_review_draft_instance(
                 self._get_runner().generate_review(request, dialogue)
             )
-            result = self._build_review_response_from_draft(request, draft, dialogue)
+            response = self._build_review_response_from_draft(request, draft, dialogue)
+            result = ReviewWithDialogueResult(
+                response=_ensure_model_instance(response, ReviewResponse),
+                dialogue=dialogue,
+            )
         except AIServiceConfigurationError:
             raise
         except ConversationMemoryNotFoundError:
@@ -555,10 +796,28 @@ class DormHarmonyAIService:
 
         if public_error is not None:
             raise public_error
+        if result is None:
+            raise AIServiceUnavailableError(_UNAVAILABLE_ERROR_MESSAGE)
 
-        return _ensure_model_instance(result, ReviewResponse)
+        return result
 
     def _simulate_with_memory(
+        self,
+        request: SimulateRequest,
+        archive_context_summary: str | None = None,
+    ) -> SimulateResponse:
+        """串行化同一会话的一轮模拟，避免并发请求交错写入。"""
+        if request.conversation_id:
+            if not self._memory.has_conversation(request.conversation_id):
+                raise ConversationMemoryNotFoundError(_MEMORY_NOT_FOUND_MESSAGE)
+            if not request.is_continuation:
+                self._memory.mark_latest_turn(request.conversation_id, request.turn_id)
+            with _get_conversation_operation_lock(request.conversation_id):
+                return self._simulate_with_memory_locked(request, archive_context_summary)
+
+        return self._simulate_with_memory_locked(request, archive_context_summary)
+
+    def _simulate_with_memory_locked(
         self,
         request: SimulateRequest,
         archive_context_summary: str | None = None,
@@ -618,17 +877,11 @@ class DormHarmonyAIService:
             reply = _normalize_roommate_reply(reply, roommate_by_id)
             same_turn_replies.append(reply)
 
-        if request.is_continuation and not self._memory.is_latest_turn(
+        if request.turn_id and not self._memory.is_latest_turn(
             conversation_id,
             request.turn_id,
         ):
-            return SimulateResponse(
-                conversation_id=conversation_id,
-                replies=[],
-                archive_context_used=archive_context_summary is not None,
-                archive_context_summary=archive_context_summary,
-                safety_note=SIMULATE_SAFETY_NOTE,
-            )
+            return _empty_simulate_response(conversation_id, archive_context_summary)
 
         if legacy_dialogue:
             self._migrate_legacy_dialogue(conversation_id, legacy_dialogue, request.roommates)
@@ -661,12 +914,16 @@ class DormHarmonyAIService:
 
         return self._memory.start_conversation()
 
-    def _resolve_review_dialogue(self, request: ReviewRequest) -> list[DialogueMessage]:
+    def resolve_review_dialogue(self, request: ReviewRequest) -> list[DialogueMessage]:
         """复盘优先读取后端记忆，未提供会话 id 时使用 legacy dialogue。"""
         if request.conversation_id:
             return self._memory.get_dialogue(request.conversation_id, limit=50)
 
         return request.dialogue[-50:]
+
+    def _resolve_review_dialogue(self, request: ReviewRequest) -> list[DialogueMessage]:
+        """兼容旧内部调用；路由层应使用公开 resolve_review_dialogue。"""
+        return self.resolve_review_dialogue(request)
 
     def _validate_review_dialogue_has_user_message(
         self,
@@ -775,6 +1032,13 @@ class DormHarmonyAIService:
                 draft.next_steps or [],
                 fallback=["选择双方情绪较平稳的时间，围绕一个具体可执行的调整继续沟通。"],
             ),
+            "communication_plan": _normalize_review_communication_plan(
+                draft.communication_plan,
+                request,
+                suggestions,
+                rewritten_message,
+                draft.next_steps or [],
+            ),
             "safety_note": _normalize_review_safety_note(draft.safety_note),
         }
 
@@ -856,6 +1120,8 @@ def _ensure_review_draft_instance(value: object) -> ReviewDraftResponse:
             draft_payload["next_steps"] = []
         if not isinstance(draft_payload.get("performance_scores"), dict):
             draft_payload["performance_scores"] = None
+        if not isinstance(draft_payload.get("communication_plan"), dict):
+            draft_payload["communication_plan"] = None
 
         try:
             return ReviewDraftResponse.model_validate(draft_payload)
@@ -944,6 +1210,40 @@ def _normalize_review_safety_note(value: object | None) -> str:
         return REVIEW_SAFETY_NOTE
 
     return text
+
+
+def _normalize_review_communication_plan(
+    plan: ReviewCommunicationPlanDraft | None,
+    request: ReviewRequest,
+    suggestions: list[ReviewRewriteSuggestion],
+    rewritten_message: str,
+    next_steps: list[object],
+) -> CommunicationPlan:
+    """AI 沟通计划缺项时，基于场景、改写建议和下一步动作生成兜底计划。"""
+    opening = _clean_text(plan.opening if plan is not None else None)
+    specific_request = _clean_text(plan.specific_request if plan is not None else None)
+    fallback_plan = _clean_text(plan.fallback_plan if plan is not None else None)
+    cleaned_next_steps = _sanitize_text_list(
+        next_steps,
+        fallback=["如果当下不方便达成一致，先约定稍后再谈，必要时请辅导员等现实支持协助。"],
+    )
+
+    if opening is None:
+        opening = f"我想和你商量一下“{request.scenario}”，先说明这件事对我的具体影响。"
+    if specific_request is None:
+        specific_request = rewritten_message
+        if not specific_request and suggestions:
+            specific_request = suggestions[0].suggested_message
+        if not specific_request:
+            specific_request = "提出一个具体、可执行、方便对方回应的调整请求。"
+    if fallback_plan is None:
+        fallback_plan = cleaned_next_steps[0]
+
+    return CommunicationPlan(
+        opening=_truncate_review_text(opening, 500),
+        specific_request=_truncate_review_text(specific_request, 500),
+        fallback_plan=_truncate_review_text(fallback_plan, 500),
+    )
 
 
 def _normalize_review_suggestions(
@@ -1172,8 +1472,39 @@ def _normalize_roommate_reply(
         update={
             "roommate": roommate.name,
             "personality": roommate.personality_tag,
+            "message": _replace_internal_roommate_references(
+                reply.message,
+                roommate_by_id,
+            ),
         }
     )
+
+
+def _replace_internal_roommate_references(
+    message: str,
+    roommate_by_id: dict[str, RoommateProfile],
+) -> str:
+    """把模型误写进正文的内部舍友 id 或自定义 id 后缀替换为展示姓名。"""
+    normalized = message
+    for roommate_id in sorted(roommate_by_id, key=len, reverse=True):
+        roommate = roommate_by_id[roommate_id]
+        normalized = re.sub(
+            rf"(?<![A-Za-z0-9_]){re.escape(roommate_id)}(?![A-Za-z0-9_])",
+            roommate.name,
+            normalized,
+        )
+
+        suffix = roommate_id.removeprefix("roommate_")
+        if len(suffix) < 2 or suffix == roommate.name:
+            continue
+
+        normalized = re.sub(
+            rf"(?<![A-Za-z0-9_]){re.escape(suffix)}(?![A-Za-z0-9_])",
+            roommate.name,
+            normalized,
+        )
+
+    return normalized
 
 
 LangChainOpenAIRunner = LangChainDeepSeekRunner

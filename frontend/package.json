@@ -10,6 +10,7 @@
     "verify:week1": "node scripts/verify-week1.mjs",
     "verify:phase2": "node scripts/verify-phase2.mjs",
     "verify:phase3": "node scripts/verify-phase3.mjs",
+    "verify:motion": "node scripts/verify-gsap-motion.mjs",
     "verify:v2": "node scripts/verify-v2.mjs",
     "verify:modal-guidance": "node scripts/verify-modal-guidance.mjs",
     "verify:passphrase": "node scripts/verify-passphrase-gate.mjs",
@@ -25,6 +26,7 @@
     "axios": "^1.16.0",
     "echarts": "^6.0.0",
     "element-plus": "^2.14.0",
+    "gsap": "^3.15.0",
     "pinia": "^3.0.4",
     "vue": "^3.5.32",
     "vue-router": "^5.0.4"

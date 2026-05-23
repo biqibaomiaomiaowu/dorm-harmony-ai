@@ -55,6 +55,41 @@ function requireMatches(relativePath, checks) {
   }
 }
 
+function requireReviewDialogueListModalContract() {
+  const relativePath = 'src/views/ReviewView.vue'
+  const content = read(relativePath)
+  const modalStart = content.indexOf('<Transition name="review-dialogue-modal"')
+
+  if (modalStart < 0) {
+    failures.push(`${relativePath} is missing the review dialogue modal transition`)
+    return
+  }
+
+  const beforeModal = content.slice(0, modalStart)
+  if (/\breview-dialogue-list\b/.test(beforeModal)) {
+    failures.push(`${relativePath} should not render the full dialogue list before the modal`)
+  }
+
+  const modalEnd = content.indexOf('</Transition>', modalStart)
+  if (modalEnd < 0) {
+    failures.push(`${relativePath} is missing the review dialogue modal closing transition`)
+    return
+  }
+
+  const modalBlock = content.slice(modalStart, modalEnd)
+  const classAttributePattern = /class\s*=\s*["']([^"']*)["']/g
+  const hasModalDialogueList = Array.from(modalBlock.matchAll(classAttributePattern)).some(
+    ([, classValue]) => {
+      const classes = new Set(classValue.split(/\s+/).filter(Boolean))
+      return classes.has('review-dialogue-list') && classes.has('review-dialogue-modal-list')
+    },
+  )
+
+  if (!hasModalDialogueList) {
+    failures.push(`${relativePath} should render the full dialogue list inside the modal`)
+  }
+}
+
 requireIncludes('package.json', ['"verify:v2": "node scripts/verify-v2.mjs"'])
 
 requireIncludes('src/router/index.ts', [
@@ -225,28 +260,65 @@ requireIncludes('src/styles/main.css', [
 ])
 
 requireIncludes('src/views/SimulationView.vue', [
+  'useSimulationSession',
   'conversationMessages',
-  'appendReplyWithDelay',
-  'replyDelayMs',
-  'dialogue',
   'const defaultSpeechPlaceholder =',
-  'const userMessage = ref(\'\')',
-  "userMessage.value = ''",
   ':placeholder="defaultSpeechPlaceholder"',
   '正在生成',
+  'sessionErrorState',
+  'retryFromExpiredSession',
+  'resetConversation',
 ])
 requireExcludes('src/views/SimulationView.vue', [
   'replies.value = result.replies',
   'const userMessage = ref(defaultSpeech)',
   'userMessage.value = defaultSpeech',
   'parsed.request.user_message || defaultSpeech',
+  'submitSimulationRequest',
+])
+requireIncludes('src/composables/useSimulationSession.ts', [
+  'submitSimulationStreamRequest',
+  'SimulationStreamRequestError',
+  "SimulationSessionErrorState = '' | 'expired'",
+  'retryFromExpiredSession',
+  'activeSimulationAbortController',
+  'generationRunId',
+])
+requireMatches('src/composables/useSimulationSession.ts', [
+  {
+    label: 'simulation session submits through stream API helper',
+    pattern: /await submitSimulationStreamRequest\(/,
+  },
+  {
+    label: 'expired simulation sessions enter fixed error state',
+    pattern:
+      /function markExpiredSession[\s\S]*?sessionErrorState\.value = 'expired'[\s\S]*?if \(isExpiredSessionError\(error\)\) \{[\s\S]*?markExpiredSession\(/,
+  },
+])
+requireNoMatches('src/views/SimulationView.vue', [
+  {
+    label: 'simulation view directly importing non-stream request helper',
+    pattern: /import\s*\{[\s\S]*?submitSimulationRequest[\s\S]*?\}\s*from ['"]@\/data\/week1['"]/,
+  },
 ])
 
 requireIncludes('src/views/ReviewView.vue', [
+  'fetchReviewHistory',
+  'fetchReviewReport',
   'storedDialogue',
-  '完整对话',
+  'review-dialogue-entry-card',
+  'dialogueTriggerRef',
+  'openDialogueModal',
+  'isDialogueModalOpen',
+  'review-dialogue-modal',
+  '查看完整对话',
   'performance_scores',
-  'hasReviewResult',
+  'communicationPlanItems',
+  '原话 vs 推荐话术',
+  '沟通计划',
+  'exportReviewMarkdown',
+  'practiceAgain',
+  'canShowReviewWorkspace',
   '<Transition name="review-result-transition" mode="out-in">',
   'review-result-stack',
   'review-card-reveal-item',
@@ -255,8 +327,6 @@ requireIncludes('src/views/ReviewView.vue', [
   'animateReviewScores',
   'requestAnimationFrame',
   'onBeforeUnmount',
-  'latestUserMessage',
-  '暂无本轮用户输入',
   'reviewResponse.value.performance_scores.clarity',
   'reviewResponse.value.performance_scores.empathy',
   'reviewResponse.value.performance_scores.resolution',
@@ -299,25 +369,30 @@ requireNoMatches('src/views/ReviewView.vue', [
     pattern: /if \(!dialogue\.length\) \{[\s\S]*?speaker:\s*['"]user['"]/,
   },
 ])
+requireReviewDialogueListModalContract()
 
 requireIncludes('src/data/week1.ts', [
   'ReviewPerformanceScores',
+  'CommunicationPlan',
+  'ReviewRequestError',
   'isReviewPerformanceScores',
+  'isCommunicationPlan',
   'performance_scores:',
+  'communication_plan:',
   'clarity',
   'empathy',
   'resolution',
 ])
 requireMatches('src/data/week1.ts', [
   {
-    label: 'ReviewResponsePayload keeps performance_scores optional for legacy review responses',
+    label: 'ReviewResponsePayload keeps V3 optional fields compatible for legacy review responses',
     pattern:
-      /Omit<ReviewResponse,\s*'performance_scores'\s*\|\s*'is_demo'\s*\|\s*'demo_notice'>[\s\S]*?Partial<Pick<ReviewResponse,\s*'performance_scores'\s*\|\s*'is_demo'\s*\|\s*'demo_notice'>>/,
+      /Omit<[\s\S]*?ReviewResponse,[\s\S]*?'performance_scores'\s*\|\s*'communication_plan'\s*\|\s*'is_demo'\s*\|\s*'demo_notice'[\s\S]*?>[\s\S]*?Partial<[\s\S]*?Pick<ReviewResponse,\s*'performance_scores'\s*\|\s*'communication_plan'\s*\|\s*'is_demo'\s*\|\s*'demo_notice'>[\s\S]*?>/,
   },
   {
-    label: 'isReviewResponsePayload allows missing performance_scores but validates present scores',
+    label: 'isReviewResponsePayload allows missing V3 fields but validates present values',
     pattern:
-      /typeof performanceScores === 'undefined'\s*\|\|\s*isReviewPerformanceScores\(performanceScores\)/,
+      /typeof performanceScores === 'undefined'\s*\|\|\s*isReviewPerformanceScores\(performanceScores\)[\s\S]*?typeof communicationPlan === 'undefined'\s*\|\|\s*isCommunicationPlan\(communicationPlan\)/,
   },
   {
     label: 'stored review hydration normalizes legacy responses',
@@ -344,9 +419,14 @@ requireMatches('src/data/week1.ts', [
       /function normalizeReviewResponse[\s\S]*?performance_scores:\s*isReviewPerformanceScores\(raw\.performance_scores\)\s*\?\s*raw\.performance_scores\s*:\s*\{\s*\.\.\.demoReviewPerformanceScores\s*\}/,
   },
   {
+    label: 'normalizeReviewResponse normalizes missing communication_plan',
+    pattern:
+      /function normalizeReviewResponse[\s\S]*?communication_plan:\s*normalizeCommunicationPlan\(raw\.communication_plan,\s*rewrittenMessage\)/,
+  },
+  {
     label: 'normalizeReviewResponse preserves backend rewritten_message',
     pattern:
-      /function normalizeReviewResponse[\s\S]*?rewritten_message:\s*normalizeRewrittenMessage\(raw\.rewritten_message as ReviewResponse\['rewritten_message'\]\)/,
+      /function normalizeReviewResponse[\s\S]*?const rewrittenMessage = normalizeRewrittenMessage\(raw\.rewritten_message[\s\S]*?rewritten_message:\s*rewrittenMessage/,
   },
   {
     label: 'normalizeReviewResponse preserves backend next_steps',
@@ -358,6 +438,87 @@ requireMatches('src/data/week1.ts', [
     pattern:
       /function normalizeReviewResponse[\s\S]*?safety_note:\s*[\s\S]*?typeof raw\.safety_note === 'string'\s*\?\s*raw\.safety_note\s*:/,
   },
+  {
+    label: 'submitReviewRequest rethrows client-state 400 errors instead of demo fallback',
+    pattern:
+      /if \(!response\.ok && response\.status === 400\) \{[\s\S]*?throw new ReviewRequestError[\s\S]*?if \(error instanceof ReviewRequestError\) \{[\s\S]*?throw error/,
+  },
+])
+
+requireMatches('src/data/reviewHistory.ts', [
+  {
+    label: 'review history normalizes legacy original_event event_type aliases',
+    pattern:
+      /mapEventTypeToAnalyzeApi[\s\S]*?function normalizeReviewHistoryEventType[\s\S]*?mapEventTypeToAnalyzeApi/,
+  },
+])
+
+requireIncludes('src/data/reviewHistory.ts', [
+  '/api/reviews',
+  'fetchReviewHistory',
+  'fetchReviewReport',
+  'deleteReviewReport',
+  'ReviewReportSummary',
+  'ReviewReportDetail',
+  'normalizeReviewResponse',
+])
+
+requireMatches('src/views/ReviewView.vue', [
+  {
+    label: 'review page skips current report generation when there is no user dialogue',
+    pattern:
+      /function hasReviewableDialogue[\s\S]*?speaker === 'user'[\s\S]*?if \(!hasReviewableDialogue\(context\.dialogue\)\)/,
+  },
+  {
+    label: 'review page can show history workspace without a current report',
+    pattern:
+      /const canShowReviewWorkspace = computed[\s\S]*?reviewHistory\.value\.length > 0[\s\S]*?v-if="canShowReviewWorkspace"/,
+  },
+  {
+    label: 'review page uses Markdown export instead of PDF export',
+    pattern:
+      /function exportReviewMarkdown\(\)[\s\S]*?new Blob\(\[buildReviewMarkdown\(\)\],[\s\S]*?text\/markdown[\s\S]*?review-report-\$\{reviewFileStamp\(\)\}\.md/,
+  },
+  {
+    label: 'review page restores roommate names from history detail',
+    pattern:
+      /function snapshotFromReportDetail[\s\S]*?roommateNames: detail\.request\.roommate_names/,
+  },
+  {
+    label: 'review history is rendered as a horizontal strip',
+    pattern:
+      /class="review-history-strip[\s\S]*?\.review-workspace\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)[\s\S]*?\.review-history-list\s*\{[\s\S]*?grid-auto-flow:\s*column[\s\S]*?overflow-x:\s*auto/,
+  },
+  {
+    label: 'review history hides the persisted duplicate of the current report',
+    pattern:
+      /const visibleReviewHistory = computed<ReviewReportSummary\[\]>\(\(\) =>[\s\S]*?findCurrentReportDuplicateId[\s\S]*?reviewHistory\.value\.filter\(\(report\) => report\.id !== duplicateId\)[\s\S]*?v-for="report in visibleReviewHistory"/,
+  },
+  {
+    label: 'review page deletes history through API and removes it from local state',
+    pattern:
+      /deleteReviewReport[\s\S]*?const deletingReviewIds = ref<Set<string>>[\s\S]*?const pendingDeleteReviewId = ref<string \| null>\(null\)[\s\S]*?async function deleteHistoryReport[\s\S]*?pendingDeleteReviewId\.value !== report\.id[\s\S]*?await deleteReviewReport\(report\.id\)[\s\S]*?reviewHistory\.value = reviewHistory\.value\.filter/,
+  },
+  {
+    label: 'review page resets pending delete state after failed delete',
+    pattern:
+      /catch \(error\) \{\s*pendingDeleteReviewId\.value = null[\s\S]{0,240}?复盘历史删除失败/,
+  },
+  {
+    label: 'review history deletion animates card removal and moves',
+    pattern:
+      /<TransitionGroup[\s\S]*?name="review-history-card"[\s\S]*?class="review-history-list"[\s\S]*?\.review-history-card-enter-active,[\s\S]*?\.review-history-card-leave-active,[\s\S]*?\.review-history-card-move[\s\S]*?transition:/,
+  },
+])
+requireExcludes('src/views/ReviewView.vue', [
+  'window.confirm',
+  'exportReviewImage',
+  '导出图片',
+  'exportReviewPdf',
+  '导出 PDF',
+  'isExportingPdf',
+  'application/pdf',
+  'buildPdfWithJpeg',
 ])
 
 requireIncludes('src/styles/main.css', [

@@ -1,11 +1,14 @@
 """FastAPI 应用入口，负责路由、CORS 和服务层错误映射。"""
 
+from contextlib import asynccontextmanager
 import json
+import logging
 import os
+from threading import Lock
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from app.ai_service import (
     AIServiceConfigurationError,
@@ -17,7 +20,8 @@ from app.ai_service import (
 )
 from app.archive_analysis import analyze_archive_pressure
 from app.env import load_project_env
-from app.event_store import JsonEventStore
+from app.event_store import EventStore, SQLiteEventStore, get_default_sqlite_path
+from app.review_store import SQLiteReviewHistoryStore
 from app.schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
@@ -26,6 +30,8 @@ from app.schemas import (
     EventArchiveResponse,
     EventRecord,
     EventRecordCreate,
+    ReviewHistoryResponse,
+    ReviewReportDetail,
     ReviewRequest,
     ReviewResponse,
     SimulateRequest,
@@ -36,6 +42,7 @@ from app.scoring import analyze_pressure
 
 
 load_project_env()
+logger = logging.getLogger(__name__)
 
 
 def _get_cors_origins() -> list[str]:
@@ -49,7 +56,38 @@ def _get_cors_origins() -> list[str]:
     return origins or ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 
-app = FastAPI(title="Dorm Harmony AI")
+_SHARED_CONVERSATION_MEMORY: ConversationMemory | None = None
+_SHARED_CONVERSATION_MEMORY_LOCK = Lock()
+
+
+def get_shared_conversation_memory() -> ConversationMemory:
+    """懒加载共享会话记忆，避免模块 import 时写入运行时 SQLite。"""
+    global _SHARED_CONVERSATION_MEMORY
+    with _SHARED_CONVERSATION_MEMORY_LOCK:
+        if _SHARED_CONVERSATION_MEMORY is None:
+            _SHARED_CONVERSATION_MEMORY = ConversationMemory.sqlite(get_default_sqlite_path())
+        return _SHARED_CONVERSATION_MEMORY
+
+
+def close_shared_conversation_memory() -> None:
+    """关闭共享 SQLite 会话记忆连接。"""
+    global _SHARED_CONVERSATION_MEMORY
+    with _SHARED_CONVERSATION_MEMORY_LOCK:
+        if _SHARED_CONVERSATION_MEMORY is not None:
+            _SHARED_CONVERSATION_MEMORY.close()
+            _SHARED_CONVERSATION_MEMORY = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期：关闭共享 SQLite 会话记忆连接。"""
+    try:
+        yield
+    finally:
+        close_shared_conversation_memory()
+
+
+app = FastAPI(title="Dorm Harmony AI", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_get_cors_origins(),
@@ -57,20 +95,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_SHARED_CONVERSATION_MEMORY = ConversationMemory()
-
 
 def get_ai_service() -> DormHarmonyAIService:
     """FastAPI 依赖注入入口，测试中可覆盖为 fake service。"""
-    return DormHarmonyAIService(memory=_SHARED_CONVERSATION_MEMORY)
+    return DormHarmonyAIService(memory=get_shared_conversation_memory())
 
 
-def get_event_store() -> JsonEventStore:
+def get_event_store() -> SQLiteEventStore:
     """FastAPI 依赖注入入口，测试中可覆盖事件档案存储。"""
-    return JsonEventStore()
+    return SQLiteEventStore()
 
 
-def _build_archive_context_summary(event_store: JsonEventStore) -> str | None:
+def get_review_history_store() -> SQLiteReviewHistoryStore:
+    """FastAPI 依赖注入入口，测试中可覆盖复盘历史存储。"""
+    return SQLiteReviewHistoryStore()
+
+
+def _build_archive_context_summary(event_store: EventStore) -> str | None:
     """为模拟路由生成受控、短文本的事件档案摘要。"""
     events = event_store.list()
     if not events:
@@ -123,7 +164,7 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
 @app.post("/api/events", response_model=EventRecord)
 def create_event_record(
     request: EventRecordCreate,
-    event_store: JsonEventStore = Depends(get_event_store),
+    event_store: EventStore = Depends(get_event_store),
 ) -> EventRecord:
     """保存一条事件档案，并同步生成单条事件压力分析快照。"""
     return event_store.add(request)
@@ -131,7 +172,7 @@ def create_event_record(
 
 @app.get("/api/events", response_model=EventArchiveResponse)
 def list_event_records(
-    event_store: JsonEventStore = Depends(get_event_store),
+    event_store: EventStore = Depends(get_event_store),
 ) -> EventArchiveResponse:
     """返回当前事件档案列表，不调用 AI 服务。"""
     return EventArchiveResponse(events=event_store.list())
@@ -140,7 +181,7 @@ def list_event_records(
 @app.delete("/api/events/{event_id}", status_code=204)
 def delete_event_record(
     event_id: str,
-    event_store: JsonEventStore = Depends(get_event_store),
+    event_store: EventStore = Depends(get_event_store),
 ) -> None:
     """删除一条事件档案；派生压力和 AI 见解由前端重新请求。"""
     if not event_store.delete(event_id):
@@ -152,7 +193,7 @@ def delete_event_record(
 
 @app.get("/api/events/analysis", response_model=ArchiveAnalysisResponse)
 def analyze_event_archive(
-    event_store: JsonEventStore = Depends(get_event_store),
+    event_store: EventStore = Depends(get_event_store),
 ) -> ArchiveAnalysisResponse:
     """汇总事件档案并返回总压力分析，不调用 AI 服务。"""
     return analyze_archive_pressure(event_store.list())
@@ -160,7 +201,7 @@ def analyze_event_archive(
 
 @app.post("/api/events/insight", response_model=ArchiveInsightResponse)
 def archive_insight(
-    event_store: JsonEventStore = Depends(get_event_store),
+    event_store: EventStore = Depends(get_event_store),
     ai_service: DormHarmonyAIService = Depends(get_ai_service),
 ) -> ArchiveInsightResponse:
     """基于事件档案和总压力分析生成 AI 心晴见解。"""
@@ -186,7 +227,7 @@ def archive_insight(
 def simulate(
     request: SimulateRequest,
     ai_service: DormHarmonyAIService = Depends(get_ai_service),
-    event_store: JsonEventStore = Depends(get_event_store),
+    event_store: EventStore = Depends(get_event_store),
 ) -> SimulateResponse:
     """调用 AI 服务生成三位虚拟舍友的结构化模拟回复。"""
     try:
@@ -216,7 +257,7 @@ def _encode_ndjson_event(event: dict[str, object]) -> str:
 def simulate_stream(
     request: SimulateRequest,
     ai_service: DormHarmonyAIService = Depends(get_ai_service),
-    event_store: JsonEventStore = Depends(get_event_store),
+    event_store: EventStore = Depends(get_event_store),
 ) -> StreamingResponse:
     """以 start、reply、final 顺序流式返回沟通模拟结果。"""
     try:
@@ -256,10 +297,26 @@ def simulate_stream(
 def review(
     request: ReviewRequest,
     ai_service: DormHarmonyAIService = Depends(get_ai_service),
+    review_store: SQLiteReviewHistoryStore = Depends(get_review_history_store),
 ) -> ReviewResponse:
     """调用 AI 服务生成结构化沟通复盘报告。"""
     try:
-        return ai_service.review(request)
+        review_with_dialogue = getattr(ai_service, "review_with_dialogue", None)
+        if callable(review_with_dialogue):
+            result = review_with_dialogue(request)
+            response = result.response
+            dialogue = list(result.dialogue)
+        else:
+            response = ai_service.review(request)
+            dialogue = request.dialogue[-50:]
+
+        if not response.is_demo:
+            try:
+                review_store.add(request, response, dialogue)
+            except Exception:
+                logger.exception("Failed to persist review report history")
+
+        return response
     except AIServiceConfigurationError as exc:
         # 配置缺失是本地部署问题，前端按 503 展示“需要配置 AI 服务”。
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -272,3 +329,37 @@ def review(
     except AIServiceUnavailableError as exc:
         # 已配置但模型调用失败或输出异常，按 502 处理为上游服务不可用。
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/reviews", response_model=ReviewHistoryResponse)
+def list_review_reports(
+    limit: int = Query(default=20, ge=1),
+    review_store: SQLiteReviewHistoryStore = Depends(get_review_history_store),
+) -> ReviewHistoryResponse:
+    """返回最近的沟通复盘历史摘要。"""
+    return ReviewHistoryResponse(reports=review_store.list(limit=min(limit, 50)))
+
+
+@app.get("/api/reviews/{review_id}", response_model=ReviewReportDetail)
+def get_review_report(
+    review_id: str,
+    review_store: SQLiteReviewHistoryStore = Depends(get_review_history_store),
+) -> ReviewReportDetail:
+    """返回单条沟通复盘历史详情。"""
+    report = review_store.get(review_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="复盘历史不存在或已被删除。")
+
+    return report
+
+
+@app.delete("/api/reviews/{review_id}", status_code=204)
+def delete_review_report(
+    review_id: str,
+    review_store: SQLiteReviewHistoryStore = Depends(get_review_history_store),
+) -> Response:
+    """删除单条沟通复盘历史。"""
+    if not review_store.delete(review_id):
+        raise HTTPException(status_code=404, detail="复盘历史不存在或已被删除。")
+
+    return Response(status_code=204)

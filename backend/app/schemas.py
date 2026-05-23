@@ -719,6 +719,7 @@ class ReviewRequest(BaseModel):
     conversation_id: str | None = Field(default=None, max_length=100)
     scenario: str = Field(max_length=300)
     dialogue: list[DialogueMessage] = Field(default_factory=list, max_length=50)
+    roommate_names: dict[DialogueSpeaker, str] = Field(default_factory=dict, max_length=20)
     original_event: ReviewOriginalEvent | None = None
 
     @field_validator("conversation_id", mode="before")
@@ -745,6 +746,32 @@ class ReviewRequest(BaseModel):
             raise ValueError("scenario must not be empty")
 
         return scenario
+
+    @field_validator("roommate_names", mode="before")
+    @classmethod
+    def normalize_roommate_names(cls, value: object) -> dict[str, str]:
+        """保留复盘历史展示所需的舍友 id 到用户自定义姓名映射。"""
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("roommate_names must be an object")
+
+        roommate_names: dict[str, str] = {}
+        for raw_key, raw_name in value.items():
+            if not isinstance(raw_key, str) or not isinstance(raw_name, str):
+                raise ValueError("roommate_names keys and values must be strings")
+
+            key = raw_key.strip()
+            name = raw_name.strip()
+            if not key or not name:
+                continue
+            if not key.startswith("roommate_") or len(key) > 64:
+                raise ValueError("roommate_names keys must be roommate_* ids")
+            if len(name) > 20:
+                raise ValueError("roommate_names values must be at most 20 characters")
+            roommate_names[key] = name
+
+        return roommate_names
 
 
 class ReviewRewriteSuggestion(BaseModel):
@@ -782,6 +809,38 @@ class ReviewPerformanceScores(BaseModel):
     resolution: int = Field(ge=0, le=100)
 
 
+class CommunicationPlan(BaseModel):
+    """复盘后给用户继续现实沟通的三段式行动计划。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    opening: str = Field(max_length=500)
+    specific_request: str = Field(max_length=500)
+    fallback_plan: str = Field(max_length=500)
+
+    @field_validator("opening", "specific_request", "fallback_plan", mode="before")
+    @classmethod
+    def trim_and_require_text(cls, value: str) -> str:
+        """清理沟通计划文本字段，并拒绝空字符串。"""
+        if not isinstance(value, str):
+            raise ValueError("field must be a string")
+
+        text = value.strip()
+        if not text:
+            raise ValueError("field must not be empty")
+
+        return text
+
+
+def default_communication_plan() -> CommunicationPlan:
+    """为旧复盘响应和测试 fake 响应提供兼容默认沟通计划。"""
+    return CommunicationPlan(
+        opening="先用平和语气说明自己想沟通的问题和真实影响。",
+        specific_request="提出一个具体、可执行、方便对方回应的调整请求。",
+        fallback_plan="如果当下不方便达成一致，先约定稍后再谈或请辅导员等现实支持协助。",
+    )
+
+
 class ReviewResponse(BaseModel):
     """AI 沟通复盘接口的结构化响应。"""
 
@@ -792,7 +851,10 @@ class ReviewResponse(BaseModel):
     rewrite_suggestions: list[ReviewRewriteSuggestion] = Field(min_length=1)
     rewritten_message: str
     next_steps: list[str] = Field(min_length=1)
+    communication_plan: CommunicationPlan = Field(default_factory=default_communication_plan)
     safety_note: str
+    is_demo: bool = False
+    demo_notice: str = Field(default="", max_length=100)
 
     @field_validator("summary", "rewritten_message", "safety_note", mode="before")
     @classmethod
@@ -806,6 +868,15 @@ class ReviewResponse(BaseModel):
             raise ValueError("field must not be empty")
 
         return text
+
+    @field_validator("demo_notice", mode="before")
+    @classmethod
+    def trim_demo_notice(cls, value: str) -> str:
+        """清理演示数据提示；默认允许空字符串。"""
+        if not isinstance(value, str):
+            raise ValueError("demo_notice must be a string")
+
+        return value.strip()
 
     @field_validator("safety_note", mode="after")
     @classmethod
@@ -828,3 +899,30 @@ class ReviewResponse(BaseModel):
             cleaned_items.append(cleaned_item)
 
         return cleaned_items
+
+
+class ReviewReportSummary(BaseModel):
+    """复盘历史列表中的轻量报告摘要。"""
+
+    id: str
+    created_at: datetime
+    conversation_id: str | None = None
+    scenario: str
+    summary: str
+    score_clarity: int = Field(ge=0, le=100)
+    score_empathy: int = Field(ge=0, le=100)
+    score_resolution: int = Field(ge=0, le=100)
+
+
+class ReviewReportDetail(ReviewReportSummary):
+    """复盘历史详情，包含请求、响应和当时实际复盘的对话快照。"""
+
+    request: ReviewRequest
+    response: ReviewResponse
+    dialogue: list[DialogueMessage] = Field(default_factory=list, max_length=50)
+
+
+class ReviewHistoryResponse(BaseModel):
+    """复盘历史列表接口响应。"""
+
+    reports: list[ReviewReportSummary]

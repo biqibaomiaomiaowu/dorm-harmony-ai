@@ -1,11 +1,13 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
+import json
+import sqlite3
 
 import pytest
 from pydantic import ValidationError
 
 from app.archive_analysis import analyze_archive_pressure
-from app.event_store import InMemoryEventStore, JsonEventStore
+from app.event_store import InMemoryEventStore, JsonEventStore, SQLiteEventStore
 from app.schemas import EventRecordCreate
 
 
@@ -245,6 +247,175 @@ def test_json_event_store_returns_false_for_missing_event(tmp_path):
     store = JsonEventStore(tmp_path / "events.json")
 
     assert store.delete("missing-event") is False
+
+
+def test_sqlite_event_store_persists_and_lists_events(tmp_path):
+    store_path = tmp_path / "dorm_harmony.sqlite3"
+    legacy_json_path = tmp_path / "missing-events.json"
+    store = SQLiteEventStore(store_path, legacy_json_path=legacy_json_path)
+    older_date_event = EventRecordCreate(
+        event_date="2026-05-14",
+        event_type="noise",
+        severity=3,
+        frequency="occasional",
+        emotion="irritable",
+        has_communicated=True,
+        has_conflict=False,
+        description="旧事件。",
+    )
+    same_day_first_event = EventRecordCreate(
+        event_date="2026-05-15",
+        event_type="noise",
+        severity=4,
+        frequency="weekly_multiple",
+        emotion="anxious",
+        has_communicated=False,
+        has_conflict=True,
+        description="同日先记录事件。",
+    )
+    same_day_second_event = same_day_first_event.model_copy(
+        update={"description": "同日后记录事件。"}
+    )
+
+    saved_older_date = store.add(older_date_event)
+    saved_same_day_first = store.add(same_day_first_event)
+    saved_same_day_second = store.add(same_day_second_event)
+
+    restored_events = SQLiteEventStore(
+        store_path,
+        legacy_json_path=legacy_json_path,
+    ).list()
+
+    assert [event.id for event in restored_events] == [
+        saved_same_day_second.id,
+        saved_same_day_first.id,
+        saved_older_date.id,
+    ]
+    assert restored_events[0].single_analysis.pressure_score == 76
+    assert restored_events[0].single_analysis == saved_same_day_second.single_analysis
+    with sqlite3.connect(store_path) as connection:
+        table_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        event_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(events)")
+        }
+    assert {"events", "runtime_migrations"}.issubset(table_names)
+    assert {
+        "event_type",
+        "severity",
+        "frequency",
+        "emotion",
+        "emotions_json",
+        "primary_emotion",
+        "has_communicated",
+        "has_conflict",
+        "description",
+        "single_analysis_json",
+    }.issubset(event_columns)
+
+
+def test_sqlite_event_store_deletes_event(tmp_path):
+    store = SQLiteEventStore(
+        tmp_path / "dorm_harmony.sqlite3",
+        legacy_json_path=tmp_path / "missing-events.json",
+    )
+    saved_event = store.add(EventRecordCreate(
+        event_date="2026-05-15",
+        event_type="noise",
+        severity=4,
+        frequency="weekly_multiple",
+        emotion="anxious",
+        has_communicated=False,
+        has_conflict=True,
+        description="舍友晚上打游戏声音很大，影响睡眠。",
+    ))
+
+    assert store.delete(saved_event.id) is True
+    assert store.list() == []
+    assert store.delete("missing-event") is False
+
+
+def test_sqlite_event_store_imports_legacy_json_once(tmp_path):
+    sqlite_path = tmp_path / "dorm_harmony.sqlite3"
+    json_path = tmp_path / "events.json"
+    legacy_event = InMemoryEventStore().add(EventRecordCreate(
+        event_date="2026-05-15",
+        event_type="noise",
+        severity=4,
+        frequency="weekly_multiple",
+        emotion="anxious",
+        has_communicated=False,
+        has_conflict=True,
+        description="舍友晚上打游戏声音很大，影响睡眠。",
+    ))
+    json_path.write_text(
+        json.dumps(
+            [legacy_event.model_dump(mode="json")],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    first_import = SQLiteEventStore(
+        sqlite_path,
+        legacy_json_path=json_path,
+    ).list()
+    json_path.write_text("[]\n", encoding="utf-8")
+    second_import = SQLiteEventStore(
+        sqlite_path,
+        legacy_json_path=json_path,
+    ).list()
+
+    assert [event.id for event in first_import] == [legacy_event.id]
+    assert [event.id for event in second_import] == [legacy_event.id]
+    with sqlite3.connect(sqlite_path) as connection:
+        event_count = connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        migration_names = {
+            row[0]
+            for row in connection.execute("SELECT name FROM runtime_migrations")
+        }
+    assert event_count == 1
+    assert migration_names == {"json_events_imported"}
+
+
+def test_sqlite_event_store_marks_invalid_legacy_json_failed_once(tmp_path):
+    sqlite_path = tmp_path / "dorm_harmony.sqlite3"
+    json_path = tmp_path / "events.json"
+    json_path.write_text('{"not": "a list"}\n', encoding="utf-8")
+
+    assert SQLiteEventStore(sqlite_path, legacy_json_path=json_path).list() == []
+
+    legacy_event = InMemoryEventStore().add(EventRecordCreate(
+        event_date="2026-05-15",
+        event_type="noise",
+        severity=4,
+        frequency="weekly_multiple",
+        emotion="anxious",
+        has_communicated=False,
+        has_conflict=True,
+        description="舍友晚上打游戏声音很大，影响睡眠。",
+    ))
+    json_path.write_text(
+        json.dumps(
+            [legacy_event.model_dump(mode="json")],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    assert SQLiteEventStore(sqlite_path, legacy_json_path=json_path).list() == []
+    with sqlite3.connect(sqlite_path) as connection:
+        migration_names = {
+            row[0]
+            for row in connection.execute("SELECT name FROM runtime_migrations")
+        }
+
+    assert migration_names == {"json_events_import_failed"}
 
 
 def test_archive_pressure_single_event_stays_close_to_single_score():
