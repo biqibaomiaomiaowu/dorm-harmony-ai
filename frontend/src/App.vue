@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView } from 'vue-router'
+import CustomCursor from './components/CustomCursor.vue'
+import { useGsapMotion } from './composables/useGsapMotion'
 
 const passphraseHash = 'f292574cd8753d8ad48a2fc40cfcfe4eb38bcbd611e4d430de733c7425b35b20'
 const passphraseStorageKey = 'dorm-harmony-passphrase-verified'
@@ -38,6 +40,10 @@ const navItems = [
 const brandAvatarSrc =
   'https://lh3.googleusercontent.com/aida-public/AB6AXuDoIeE3fuGST0i8AH2TVFnjVGh_ghmeHMgRw6uUv0F6XHs-tGfTxBIOxOxQ9caVd2NzLnFXtlExYdqzmzWd5bDU1m65ZFQH1vroL-ebUGb6tEbeJ4yl3p6alHBVf0b4XtMOtvzRdRPCQAlFENmTXT0sOQQ_bDMWNAO2d13Qkg81Bnv4wY6WsSXjTKLxhv5act4Ak_2Q0Sj7xQ1lkpf4Bu7GCRJrqmQ1UAJr6F_hmuC0ZPir2-Z1lCASlOr_EmvP01FgTRlACAuJzXo'
 
+const appShellRef = ref<HTMLElement | null>(null)
+const { withContext, animatePageIn } = useGsapMotion(() => appShellRef.value)
+let hasAnimatedAppShell = false
+
 onMounted(() => {
   isPassphraseVerified.value = readStoredPassphraseState()
 
@@ -45,6 +51,44 @@ onMounted(() => {
     void nextTick(() => passphraseInputRef.value?.focus())
   }
 })
+
+watch(
+  isPassphraseVerified,
+  (verified) => {
+    if (verified) {
+      void animateUnlockedShell()
+    }
+  },
+  { flush: 'post' },
+)
+
+async function animateUnlockedShell() {
+  if (!isPassphraseVerified.value || hasAnimatedAppShell) {
+    return
+  }
+
+  await nextTick()
+
+  const shell = appShellRef.value
+  if (!shell) {
+    return
+  }
+
+  hasAnimatedAppShell = true
+  withContext(() => {
+    animatePageIn(
+      shell.querySelectorAll<HTMLElement>(
+        '.brand-lockup, .nav-pill, .sidebar-cta, .mobile-header, .mobile-nav',
+      ),
+    )
+  })
+}
+
+function handlePassphraseSwitchAfterEnter() {
+  if (isPassphraseVerified.value) {
+    void animateUnlockedShell()
+  }
+}
 
 function readStoredPassphraseState() {
   try {
@@ -188,7 +232,7 @@ async function submitPassphrase() {
 </script>
 
 <template>
-  <Transition name="passphrase-switch" mode="out-in">
+  <Transition name="passphrase-switch" mode="out-in" @after-enter="handlePassphraseSwitchAfterEnter">
     <section
       v-if="!isPassphraseVerified"
       key="gate"
@@ -245,7 +289,9 @@ async function submitPassphrase() {
       </form>
     </section>
 
-    <div v-else key="app" class="app-layout dot-grid">
+    <div v-else ref="appShellRef" key="app" class="app-layout dot-grid">
+      <CustomCursor />
+
       <aside class="sidebar card-border pop-shadow" aria-label="桌面主导航">
         <RouterLink class="brand-lockup" :to="{ name: 'home' }" aria-label="回到舍友心晴首页">
           <img :src="brandAvatarSrc" class="brand-mascot" alt="" aria-hidden="true" />
