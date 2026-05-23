@@ -6,6 +6,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, TitleComponent, TooltipComponent } from 'echarts/components'
 
+import { useGsapMotion } from '@/composables/useGsapMotion'
 import { ANALYSIS_RESULT_STORAGE_KEY } from '@/data/week1'
 import {
   ARCHIVE_INSIGHT_CACHE_KEY,
@@ -57,6 +58,10 @@ const animatedScorePercent = ref(0)
 const animatedSourcePercents = ref<Record<string, number>>({})
 const trendPoints = ref<TrendPoint[]>([])
 const trendChartRef = ref<HTMLElement | null>(null)
+const analysisPageRef = ref<HTMLElement | null>(null)
+const { gsap, withContext, animatePageIn, animateNumber, prefersReducedMotion } = useGsapMotion(
+  () => analysisPageRef.value,
+)
 const trendChartMeta = computed(() => {
   if (!trendPoints.value.length) {
     return null
@@ -77,7 +82,6 @@ const trendChartMeta = computed(() => {
   }
 })
 
-let analysisAnimationFrame = 0
 let isAnalysisViewActive = false
 let trendChartInstance: echarts.ECharts | null = null
 let trendChartResizeHandler: (() => void) | null = null
@@ -375,14 +379,6 @@ function disposeTrendChart() {
   }
 }
 
-function prefersReducedMotion() {
-  if (typeof window.matchMedia !== 'function') {
-    return false
-  }
-
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
-}
-
 function buildSourcePercentMap(percent = 1) {
   return Object.fromEntries(
     result.value.source_breakdown.map((source) => [
@@ -406,11 +402,6 @@ function animateAnalysisProgress() {
     return
   }
 
-  if (analysisAnimationFrame) {
-    window.cancelAnimationFrame(analysisAnimationFrame)
-    analysisAnimationFrame = 0
-  }
-
   if (prefersReducedMotion()) {
     applyFinalAnalysisProgress()
     return
@@ -420,30 +411,35 @@ function animateAnalysisProgress() {
   animatedSourcePercents.value = buildSourcePercentMap(0)
 
   const targetScore = normalizedScore.value
-  const durationMs = 720
-  const startTime = window.performance.now()
+  const sourceProgress = { progress: 0 }
 
-  const step = (currentTime: number) => {
-    if (!isAnalysisViewActive) {
-      analysisAnimationFrame = 0
-      return
-    }
+  withContext(() => {
+    animateNumber({
+      to: targetScore,
+      duration: 0.72,
+      onUpdate: (value) => {
+        if (isAnalysisViewActive) {
+          animatedScorePercent.value = clampScore(value)
+        }
+      },
+    })
 
-    const elapsed = currentTime - startTime
-    const progress = Math.min(1, elapsed / durationMs)
-    const easedProgress = 1 - (1 - progress) ** 3
-
-    animatedScorePercent.value = Math.round(targetScore * easedProgress)
-    animatedSourcePercents.value = buildSourcePercentMap(easedProgress)
-
-    if (progress < 1) {
-      analysisAnimationFrame = window.requestAnimationFrame(step)
-    } else {
-      analysisAnimationFrame = 0
-    }
-  }
-
-  analysisAnimationFrame = window.requestAnimationFrame(step)
+    gsap.to(sourceProgress, {
+      progress: 1,
+      duration: 0.72,
+      ease: 'power3.out',
+      onUpdate: () => {
+        if (isAnalysisViewActive) {
+          animatedSourcePercents.value = buildSourcePercentMap(sourceProgress.progress)
+        }
+      },
+      onComplete: () => {
+        if (isAnalysisViewActive) {
+          animatedSourcePercents.value = buildSourcePercentMap()
+        }
+      },
+    })
+  })
 }
 
 function isArchiveInsightResponse(value: unknown): value is ArchiveInsightResponse {
@@ -626,6 +622,13 @@ async function loadArchiveAnalysis() {
       return
     }
 
+    withContext(() => {
+      animatePageIn(
+        analysisPageRef.value?.querySelectorAll<HTMLElement>(
+          '.analysis-gauge-card, .analysis-stat-card, .analysis-source-panel, .analysis-signals-panel, .analysis-trend-panel',
+        ),
+      )
+    })
     animateAnalysisProgress()
     void loadArchiveInsightForCurrentArchive(response.event_count)
   } catch (error) {
@@ -650,11 +653,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   isAnalysisViewActive = false
   disposeTrendChart()
-
-  if (analysisAnimationFrame) {
-    window.cancelAnimationFrame(analysisAnimationFrame)
-    analysisAnimationFrame = 0
-  }
 })
 
 watch(
@@ -678,7 +676,7 @@ watch(
 </script>
 
 <template>
-  <main class="page analysis-page analysis-v2-page">
+  <main ref="analysisPageRef" class="page analysis-page analysis-v2-page">
     <span class="analysis-decoration analysis-decoration-orb-top bounce-float" aria-hidden="true"></span>
 
     <section class="analysis-v2-hero page-pop-in">

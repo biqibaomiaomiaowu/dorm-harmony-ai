@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 
+import { useGsapMotion } from '@/composables/useGsapMotion'
 import {
   deleteReviewReport,
   fetchReviewHistory,
@@ -95,8 +96,13 @@ const dialogueModalRef = ref<HTMLElement | null>(null)
 const dialogueTriggerRef = ref<HTMLButtonElement | null>(null)
 const reviewExportError = ref('')
 const animatedPerformanceScores = ref({ clarity: 0, empathy: 0, resolution: 0 })
-let reviewScoresAnimationFrame = 0
+const reviewPageRef = ref<HTMLElement | null>(null)
+const { gsap, withContext, animatePageIn, prefersReducedMotion } = useGsapMotion(
+  () => reviewPageRef.value,
+)
 let isReviewViewActive = false
+let reviewScoreTween: ReturnType<typeof gsap.to> | null = null
+let reviewScoreAnimationRun = 0
 
 function isRecord(value: unknown): value is RecordLike {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -399,13 +405,6 @@ function normalizeReviewScore(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)))
 }
 
-function prefersReducedMotion() {
-  return (
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  )
-}
-
 function targetPerformanceScores() {
   return {
     clarity: normalizeReviewScore(reviewResponse.value.performance_scores.clarity),
@@ -414,15 +413,18 @@ function targetPerformanceScores() {
   }
 }
 
-function cancelReviewScoreAnimation() {
-  if (reviewScoresAnimationFrame) {
-    window.cancelAnimationFrame(reviewScoresAnimationFrame)
-    reviewScoresAnimationFrame = 0
-  }
-}
-
 function applyFinalReviewScores() {
   animatedPerformanceScores.value = targetPerformanceScores()
+}
+
+function stopReviewScoreAnimation() {
+  reviewScoreAnimationRun += 1
+  reviewScoreTween?.kill()
+  reviewScoreTween = null
+}
+
+function isCurrentReviewScoreAnimation(animationRun: number) {
+  return isReviewViewActive && animationRun === reviewScoreAnimationRun
 }
 
 function animateReviewScores() {
@@ -430,41 +432,40 @@ function animateReviewScores() {
     return
   }
 
-  cancelReviewScoreAnimation()
+  stopReviewScoreAnimation()
 
   if (prefersReducedMotion()) {
     applyFinalReviewScores()
     return
   }
 
-  animatedPerformanceScores.value = { clarity: 0, empathy: 0, resolution: 0 }
-
   const targetScores = targetPerformanceScores()
-  const durationMs = 720
-  const startTime = window.performance.now()
+  const animateNumberState = { clarity: 0, empathy: 0, resolution: 0 }
+  const animationRun = reviewScoreAnimationRun
+  animatedPerformanceScores.value = { ...animateNumberState }
 
-  const step = (currentTime: number) => {
-    if (!isReviewViewActive) {
-      reviewScoresAnimationFrame = 0
-      return
-    }
-
-    const progress = Math.min(1, (currentTime - startTime) / durationMs)
-    const easedProgress = 1 - (1 - progress) ** 3
-    animatedPerformanceScores.value = {
-      clarity: Math.round(targetScores.clarity * easedProgress),
-      empathy: Math.round(targetScores.empathy * easedProgress),
-      resolution: Math.round(targetScores.resolution * easedProgress),
-    }
-
-    if (progress < 1) {
-      reviewScoresAnimationFrame = window.requestAnimationFrame(step)
-    } else {
-      reviewScoresAnimationFrame = 0
-    }
-  }
-
-  reviewScoresAnimationFrame = window.requestAnimationFrame(step)
+  reviewScoreTween = gsap.to(animateNumberState, {
+    clarity: targetScores.clarity,
+    empathy: targetScores.empathy,
+    resolution: targetScores.resolution,
+    duration: 0.72,
+    ease: 'power3.out',
+    onUpdate: () => {
+      if (isCurrentReviewScoreAnimation(animationRun)) {
+        animatedPerformanceScores.value = {
+          clarity: normalizeReviewScore(animateNumberState.clarity),
+          empathy: normalizeReviewScore(animateNumberState.empathy),
+          resolution: normalizeReviewScore(animateNumberState.resolution),
+        }
+      }
+    },
+    onComplete: () => {
+      if (isCurrentReviewScoreAnimation(animationRun)) {
+        reviewScoreTween = null
+        applyFinalReviewScores()
+      }
+    },
+  })
 }
 
 function hydrateStoredReview(
@@ -1063,17 +1064,24 @@ async function initReview() {
 
 onMounted(() => {
   isReviewViewActive = true
+  withContext(() => {
+    animatePageIn(
+      reviewPageRef.value?.querySelectorAll<HTMLElement>(
+        '.review-v2-header, .review-dialogue-context, .review-dialogue-entry-card',
+      ),
+    )
+  })
   void initReview()
 })
 
 onBeforeUnmount(() => {
   isReviewViewActive = false
-  cancelReviewScoreAnimation()
+  stopReviewScoreAnimation()
 })
 </script>
 
 <template>
-  <main class="page review-page review-v2-page">
+  <main ref="reviewPageRef" class="page review-page review-v2-page">
     <span class="review-bg-ball review-bg-ball-yellow bounce-float" aria-hidden="true"></span>
 
     <div class="review-v2-shell">

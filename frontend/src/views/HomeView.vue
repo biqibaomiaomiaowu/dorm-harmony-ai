@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
+import { useGsapMotion } from '@/composables/useGsapMotion'
 import { fetchArchiveAnalysis, type ArchiveAnalysisResponse } from '@/data/eventArchive'
 
 interface FeatureIntroSlide {
@@ -115,7 +116,10 @@ const homeMeterAnalysis = ref<ArchiveAnalysisResponse>(HOME_METER_FALLBACK)
 const homeMeterError = ref('')
 const isHomeMeterLoading = ref(false)
 const animatedMeterPercent = ref(0)
-let homeMeterAnimationFrame = 0
+const homePageRef = ref<HTMLElement | null>(null)
+const { withContext, animatePageIn, animateNumber, prefersReducedMotion } = useGsapMotion(
+  () => homePageRef.value,
+)
 let isHomeViewActive = false
 
 const homeMeterWeatherIcon = computed(() => {
@@ -182,20 +186,6 @@ function hasAcknowledgedSafetyModal() {
   }
 }
 
-function prefersReducedMotion() {
-  return (
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  )
-}
-
-function cancelHomeMeterAnimation() {
-  if (homeMeterAnimationFrame) {
-    window.cancelAnimationFrame(homeMeterAnimationFrame)
-    homeMeterAnimationFrame = 0
-  }
-}
-
 function normalizeHomeMeterScore(value: number) {
   if (!Number.isFinite(value)) {
     return 0
@@ -209,39 +199,26 @@ function animateHomeMeter() {
     return
   }
 
-  cancelHomeMeterAnimation()
+  const targetPercent = normalizeHomeMeterScore(homeMeterAnalysis.value.pressure_score)
 
   if (prefersReducedMotion()) {
-    animatedMeterPercent.value = normalizeHomeMeterScore(homeMeterAnalysis.value.pressure_score)
+    animatedMeterPercent.value = targetPercent
     return
   }
 
   animatedMeterPercent.value = 0
 
-  const targetPercent = normalizeHomeMeterScore(homeMeterAnalysis.value.pressure_score)
-  const durationMs = 2200
-  const startTime = window.performance.now()
-
-  const step = (currentTime: number) => {
-    if (!isHomeViewActive) {
-      homeMeterAnimationFrame = 0
-      return
-    }
-
-    const elapsed = currentTime - startTime
-    const progress = Math.min(1, elapsed / durationMs)
-    const easedProgress = 1 - (1 - progress) ** 3
-
-    animatedMeterPercent.value = Math.round(targetPercent * easedProgress)
-
-    if (progress < 1) {
-      homeMeterAnimationFrame = window.requestAnimationFrame(step)
-    } else {
-      homeMeterAnimationFrame = 0
-    }
-  }
-
-  homeMeterAnimationFrame = window.requestAnimationFrame(step)
+  withContext(() => {
+    animateNumber({
+      to: targetPercent,
+      duration: 2.2,
+      onUpdate: (value) => {
+        if (isHomeViewActive) {
+          animatedMeterPercent.value = normalizeHomeMeterScore(value)
+        }
+      },
+    })
+  })
 }
 
 async function loadHomeMeterAnalysis() {
@@ -532,6 +509,15 @@ function handlePrivacyKeydown(event: KeyboardEvent) {
 onMounted(() => {
   isHomeViewActive = true
   restoreFocusTarget.value = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  void nextTick(() => {
+    withContext(() => {
+      animatePageIn(
+        homePageRef.value?.querySelectorAll<HTMLElement>(
+          '.hero-section, .dashboard-card, .feature-card',
+        ),
+      )
+    })
+  })
   void loadHomeMeterAnalysis()
 
   if (!hasAcknowledgedSafetyModal()) {
@@ -543,12 +529,11 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   isHomeViewActive = false
-  cancelHomeMeterAnimation()
 })
 </script>
 
 <template>
-  <main class="page home-page">
+  <main ref="homePageRef" class="page home-page">
     <Transition name="modal-fade" @after-leave="handleSafetyModalAfterLeave">
       <div v-if="showSafetyModal" class="safety-modal-overlay" role="presentation">
         <section
