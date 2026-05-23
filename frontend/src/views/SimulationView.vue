@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 
+import { useGsapMotion } from '@/composables/useGsapMotion'
 import { useSimulationSession } from '@/composables/useSimulationSession'
 import { fetchEventArchive } from '@/data/eventArchive'
 import {
@@ -70,8 +71,12 @@ const roommates = ref<RoommateProfile[]>(createDefaultRoommates())
 const editingIndex = ref<number | null>(null)
 const roommateDraft = ref<RoommateDraft | null>(null)
 const showRoommateLockedModal = ref(false)
+const simulationPageRef = ref<HTMLElement | null>(null)
 const roommateLockedModalRef = ref<HTMLElement | null>(null)
 const roommateLockedConfirmRef = ref<HTMLButtonElement | null>(null)
+const { withContext, animatePageIn, animateListEnter } = useGsapMotion(
+  () => simulationPageRef.value,
+)
 
 const focusableSelector = [
   `button:not([disabled]):not([aria-disabled="true"])`,
@@ -551,6 +556,45 @@ function applyPracticePrefill() {
   userMessage.value = practice
 }
 
+function simulationTargets(selector: string) {
+  return simulationPageRef.value?.querySelectorAll<HTMLElement>(selector)
+}
+
+function revealSimulationPage() {
+  withContext(() => {
+    animatePageIn(
+      simulationTargets(
+        '.simulation-header-card, .simulation-scene-card, .roommate-card, .chat-panel, .simulation-end-bar',
+      ),
+    )
+  })
+}
+
+function revealConversationMessages(fromIndex = 0) {
+  const messages = Array.from(simulationTargets('.conversation-message') ?? [])
+  const targets = messages.slice(Math.max(0, fromIndex))
+
+  if (!targets.length) {
+    return
+  }
+
+  withContext(() => {
+    animateListEnter(targets)
+  })
+}
+
+function revealRoommateEditor() {
+  withContext(() => {
+    animatePageIn(simulationTargets('.roommate-editor-panel'))
+  })
+}
+
+function revealRoommateLockedModal() {
+  withContext(() => {
+    animatePageIn(simulationTargets('.roommate-locked-modal'))
+  })
+}
+
 onMounted(() => {
   loadRoommates()
   loadCustomScenarios()
@@ -560,6 +604,39 @@ onMounted(() => {
   applyCachedScenario(hydrated.scenario)
   applyPracticePrefill()
   void loadArchiveState()
+  void nextTick(() => {
+    revealSimulationPage()
+  })
+})
+
+watch(
+  () => conversationMessages.value.length,
+  async (length, previousLength) => {
+    if (length === 0) {
+      return
+    }
+
+    await nextTick()
+    revealConversationMessages(previousLength)
+  },
+)
+
+watch(roommateDraft, async (draft) => {
+  if (!draft) {
+    return
+  }
+
+  await nextTick()
+  revealRoommateEditor()
+})
+
+watch(showRoommateLockedModal, async (isVisible) => {
+  if (!isVisible) {
+    return
+  }
+
+  await nextTick()
+  revealRoommateLockedModal()
 })
 
 function speakerLabel(speaker: ReviewDialogueLine['speaker']) {
@@ -630,10 +707,10 @@ function deleteCustomScenario(scene: string) {
 </script>
 
 <template>
-  <main class="page simulation-page bg-diagonal-stripes">
+  <main ref="simulationPageRef" class="page simulation-page bg-diagonal-stripes">
     <span class="simulation-decoration simulation-decoration-squiggle" aria-hidden="true"></span>
 
-    <section class="simulation-header-card card-border pop-card pop-shadow page-pop-in">
+    <section class="simulation-header-card card-border pop-card pop-shadow">
       <div class="simulation-title-block">
         <h1>夜间噪音冲突</h1>
         <div class="simulation-subtitle-chip card-border">场景演练</div>
@@ -641,7 +718,7 @@ function deleteCustomScenario(scene: string) {
       <p>AI 沟通模拟演练，先选场景，再在下方输入你的沟通话术。</p>
     </section>
 
-    <section class="simulation-scene-card card-border pop-card pop-shadow page-pop-in">
+    <section class="simulation-scene-card card-border pop-card pop-shadow">
       <div class="simulation-section-heading simulation-section-heading-actions">
         <span>
           <span class="material-symbol" aria-hidden="true">rule</span>
@@ -701,7 +778,7 @@ function deleteCustomScenario(scene: string) {
       </TransitionGroup>
     </section>
 
-    <section class="simulation-layout page-pop-in">
+    <section class="simulation-layout">
       <aside class="simulation-left-column">
         <div class="panel-title panel-title-actions">
           <span>

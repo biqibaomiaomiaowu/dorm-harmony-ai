@@ -468,6 +468,28 @@ function animateReviewScores() {
   })
 }
 
+function reviewTargets(selector: string) {
+  return reviewPageRef.value?.querySelectorAll<HTMLElement>(selector)
+}
+
+function revealReviewReportPanels() {
+  if (!isReviewViewActive || !hasVisibleReviewReport.value) {
+    return
+  }
+
+  withContext(() => {
+    animatePageIn(
+      reviewTargets(
+        '.review-summary-inline, .review-score-card, .review-sticker-card, .review-suggestion-card, .review-plan-card, .review-block, .review-actions',
+      ),
+    )
+  })
+}
+
+function handleReviewReportSwitchAfterEnter() {
+  revealReviewReportPanels()
+}
+
 function hydrateStoredReview(
   payload: ReviewRequest,
   dialogue: ReviewDialogueLine[],
@@ -1220,7 +1242,11 @@ onBeforeUnmount(() => {
             </p>
           </section>
 
-          <Transition name="review-report-switch" mode="out-in">
+          <Transition
+            name="review-report-switch"
+            mode="out-in"
+            @after-enter="handleReviewReportSwitchAfterEnter"
+          >
             <div
               v-if="hasVisibleReviewReport"
               :key="activeReportKey"
@@ -1233,14 +1259,12 @@ onBeforeUnmount(() => {
                 </p>
                 <div class="review-score-grid">
                   <article
-                    v-for="(card, index) in scoreCards"
+                    v-for="card in scoreCards"
                     :key="card.title"
                     :class="[
                       'review-score-card',
-                      'review-card-reveal-item',
                       `review-score-card-${card.tone}`,
                     ]"
-                    :style="{ '--review-card-delay': `${index * 80}ms` }"
                   >
                     <span aria-hidden="true"></span>
                     <div class="review-score-ring">
@@ -1258,8 +1282,7 @@ onBeforeUnmount(() => {
                 <h2>闪光点与注意点</h2>
                 <div class="review-highlight-grid">
                   <article
-                    class="review-sticker-card review-sticker-good review-card-reveal-item pop-card pop-shadow"
-                    style="--review-card-delay: 180ms"
+                    class="review-sticker-card review-sticker-good pop-card pop-shadow"
                   >
                     <div class="review-sticker-badge">
                       <span class="material-symbol" aria-hidden="true">thumb_up</span>
@@ -1276,8 +1299,7 @@ onBeforeUnmount(() => {
                   </article>
 
                   <article
-                    class="review-sticker-card review-sticker-risk review-card-reveal-item pop-card pop-shadow"
-                    style="--review-card-delay: 260ms"
+                    class="review-sticker-card review-sticker-risk pop-card pop-shadow"
                   >
                     <div class="review-sticker-badge">
                       <span class="material-symbol" aria-hidden="true">priority_high</span>
@@ -1301,7 +1323,6 @@ onBeforeUnmount(() => {
                     v-for="(suggestion, index) in suggestionCards"
                     :key="`${suggestion.message_index}-${suggestion.original_message}-${index}`"
                     class="review-suggestion-card review-script-card pop-card pop-shadow"
-                    :style="{ '--review-card-delay': `${index * 90}ms` }"
                   >
                     <header>
                       <span>第 {{ suggestion.message_index + 1 }} 条用户表达</span>

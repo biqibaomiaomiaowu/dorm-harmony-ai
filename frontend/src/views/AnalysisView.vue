@@ -85,6 +85,8 @@ const trendChartMeta = computed(() => {
 let isAnalysisViewActive = false
 let trendChartInstance: echarts.ECharts | null = null
 let trendChartResizeHandler: (() => void) | null = null
+let hasAnimatedAnalysisSecondary = false
+let lastAnimatedInsightKey = ''
 
 const TREND_DATE_LIMIT = 14
 
@@ -397,6 +399,80 @@ function applyFinalAnalysisProgress() {
   animatedSourcePercents.value = buildSourcePercentMap()
 }
 
+function analysisTargets(selector: string) {
+  return analysisPageRef.value?.querySelectorAll<HTMLElement>(selector)
+}
+
+function revealAnalysisMainPanels() {
+  withContext(() => {
+    animatePageIn(
+      analysisTargets(
+        '.analysis-gauge-card, .analysis-stat-card, .analysis-source-panel, .analysis-signals-panel, .analysis-trend-panel',
+      ),
+    )
+  })
+}
+
+function revealAnalysisSecondarySections() {
+  if (
+    hasAnimatedAnalysisSecondary ||
+    !isAnalysisViewActive ||
+    isAnalysisLoading.value ||
+    analysisError.value
+  ) {
+    return
+  }
+
+  hasAnimatedAnalysisSecondary = true
+  withContext(() => {
+    animatePageIn(analysisTargets('.analysis-ai-section, .analysis-v2-actions, .analysis-footer'))
+  })
+}
+
+function insightRevealKey() {
+  if (!archiveInsight.value) {
+    return insightStatus.value
+  }
+
+  return [
+    insightStatus.value,
+    archiveInsight.value.insight,
+    archiveInsight.value.care_suggestion,
+    archiveInsight.value.safety_note,
+  ].join('|')
+}
+
+function revealAnalysisInsightPanel() {
+  if (
+    !isAnalysisViewActive ||
+    isAnalysisLoading.value ||
+    analysisError.value ||
+    insightStatus.value !== 'ready' ||
+    !archiveInsight.value
+  ) {
+    return
+  }
+
+  const targets = analysisTargets('.analysis-ai-card')
+  if (!targets?.length) {
+    return
+  }
+
+  const key = insightRevealKey()
+  if (key === lastAnimatedInsightKey) {
+    return
+  }
+
+  lastAnimatedInsightKey = key
+  withContext(() => {
+    animatePageIn(targets)
+  })
+}
+
+function handleAnalysisInsightPanelAfterEnter() {
+  revealAnalysisInsightPanel()
+}
+
 function animateAnalysisProgress() {
   if (!isAnalysisViewActive) {
     return
@@ -599,6 +675,8 @@ async function loadArchiveAnalysis() {
   insightStatus.value = 'idle'
   insightError.value = ''
   archiveInsight.value = null
+  hasAnimatedAnalysisSecondary = false
+  lastAnimatedInsightKey = ''
 
   try {
     const response = await fetchArchiveAnalysis()
@@ -622,13 +700,9 @@ async function loadArchiveAnalysis() {
       return
     }
 
-    withContext(() => {
-      animatePageIn(
-        analysisPageRef.value?.querySelectorAll<HTMLElement>(
-          '.analysis-gauge-card, .analysis-stat-card, .analysis-source-panel, .analysis-signals-panel, .analysis-trend-panel',
-        ),
-      )
-    })
+    revealAnalysisMainPanels()
+    revealAnalysisSecondarySections()
+    revealAnalysisInsightPanel()
     animateAnalysisProgress()
     void loadArchiveInsightForCurrentArchive(response.event_count)
   } catch (error) {
@@ -672,6 +746,18 @@ watch(
     }
   },
   { deep: true },
+)
+
+watch(
+  [archiveInsight, insightStatus],
+  async () => {
+    if (!isAnalysisViewActive) {
+      return
+    }
+
+    await nextTick()
+    revealAnalysisInsightPanel()
+  },
 )
 </script>
 
@@ -842,13 +928,17 @@ watch(
       </svg>
     </div>
 
-    <section v-if="!isAnalysisLoading && !analysisError" class="analysis-ai-section page-pop-in">
+    <section v-if="!isAnalysisLoading && !analysisError" class="analysis-ai-section">
       <h2>
         <span class="material-symbol" aria-hidden="true">auto_awesome</span>
         AI 心晴见解
       </h2>
 
-      <Transition name="analysis-ai-panel" mode="out-in">
+      <Transition
+        name="analysis-ai-panel"
+        mode="out-in"
+        @after-enter="handleAnalysisInsightPanelAfterEnter"
+      >
         <p
           v-if="insightStatus === 'loading'"
           key="loading"
@@ -863,27 +953,18 @@ watch(
           <span class="material-symbol" aria-hidden="true">cloud_off</span>
           {{ insightError }}
         </p>
-        <div v-else-if="archiveInsight" key="ready" class="analysis-ai-grid analysis-ai-grid-reveal">
-          <article
-            class="analysis-ai-card pop-card pop-shadow"
-            style="--analysis-ai-delay: 0ms"
-          >
+        <div v-else-if="archiveInsight" key="ready" class="analysis-ai-grid">
+          <article class="analysis-ai-card pop-card pop-shadow">
             <span class="material-symbol" aria-hidden="true">visibility</span>
             <h3>整体观察</h3>
             <p>{{ archiveInsight.insight }}</p>
           </article>
-          <article
-            class="analysis-ai-card pop-card pop-shadow"
-            style="--analysis-ai-delay: 80ms"
-          >
+          <article class="analysis-ai-card pop-card pop-shadow">
             <span class="material-symbol" aria-hidden="true">favorite</span>
             <h3>自我照顾建议</h3>
             <p>{{ archiveInsight.care_suggestion }}</p>
           </article>
-          <article
-            class="analysis-ai-card pop-card pop-shadow"
-            style="--analysis-ai-delay: 160ms"
-          >
+          <article class="analysis-ai-card pop-card pop-shadow">
             <span class="material-symbol" aria-hidden="true">forum</span>
             <h3>沟通重点列表</h3>
             <ul>
@@ -892,10 +973,7 @@ watch(
               </li>
             </ul>
           </article>
-          <article
-            class="analysis-ai-card analysis-ai-card-warning pop-card pop-shadow"
-            style="--analysis-ai-delay: 240ms"
-          >
+          <article class="analysis-ai-card analysis-ai-card-warning pop-card pop-shadow">
             <span class="material-symbol" aria-hidden="true">warning</span>
             <h3>安全提示</h3>
             <p>{{ archiveInsight.safety_note }}</p>
