@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
+import { useGsapMotion } from '@/composables/useGsapMotion'
 import {
   ARCHIVE_INSIGHT_CACHE_KEY,
   deleteEventRecord,
@@ -22,7 +23,11 @@ const deletingEventIds = ref<Set<string>>(new Set())
 const removingEventIds = ref<Set<string>>(new Set())
 const deleteError = ref('')
 const archiveGridRef = ref<HTMLElement | null>(null)
+const { animateFlipReflow, gsap, prefersReducedMotion, withContext } = useGsapMotion(
+  () => archiveGridRef.value,
+)
 const pageSize = 6
+let isArchiveViewActive = false
 const archiveStickerStyles = [
   { tone: 'sticker-pink', rotate: '-2.4deg', tapeRotate: '-7deg' },
   { tone: 'sticker-yellow', rotate: '2deg', tapeRotate: '5deg' },
@@ -31,7 +36,6 @@ const archiveStickerStyles = [
   { tone: 'sticker-blue', rotate: '-1.6deg', tapeRotate: '6deg' },
   { tone: 'sticker-cream', rotate: '2.8deg', tapeRotate: '-2deg' },
 ] as const
-let archiveReflowAnimations: Animation[] = []
 
 const latestEventDate = computed(() => events.value[0]?.event_date ?? '暂无记录')
 const pageCount = computed(() => Math.max(1, Math.ceil(events.value.length / pageSize)))
@@ -122,13 +126,6 @@ function clearArchiveInsightCache() {
   }
 }
 
-function prefersReducedMotion() {
-  return (
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  )
-}
-
 function collectArchiveSlotRects() {
   const rects = new Map<string, DOMRect>()
   const slots = archiveGridRef.value?.querySelectorAll<HTMLElement>('[data-event-id]') ?? []
@@ -144,73 +141,70 @@ function collectArchiveSlotRects() {
   return rects
 }
 
-function cancelArchiveReflowAnimations() {
-  for (const animation of archiveReflowAnimations) {
-    animation.cancel()
+function findArchiveEventCard(eventId: string) {
+  const slots = archiveGridRef.value?.querySelectorAll<HTMLElement>('[data-event-id]') ?? []
+
+  for (const slot of slots) {
+    if (slot.dataset.eventId === eventId) {
+      return slot.querySelector<HTMLElement>('.archive-event-card')
+    }
   }
 
-  archiveReflowAnimations = []
+  return null
 }
 
-async function animateArchiveReflow(previousRects: Map<string, DOMRect>) {
-  await nextTick()
-
-  if (prefersReducedMotion()) {
+async function removeEventAfterAnimation(eventId: string) {
+  if (!isArchiveViewActive) {
     return
   }
 
-  const slots = archiveGridRef.value?.querySelectorAll<HTMLElement>('[data-event-id]') ?? []
-  let movedSlotIndex = 0
-
-  for (const slot of slots) {
-    const eventId = slot.dataset.eventId
-    const previousRect = eventId ? previousRects.get(eventId) : undefined
-
-    if (!previousRect || typeof slot.animate !== 'function') {
-      continue
-    }
-
-    const currentRect = slot.getBoundingClientRect()
-    const deltaX = previousRect.left - currentRect.left
-    const deltaY = previousRect.top - currentRect.top
-
-    if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) {
-      continue
-    }
-
-    const animation = slot.animate(
-      [
-        { opacity: 0.92, transform: `translate(${deltaX}px, ${deltaY}px)` },
-        { opacity: 1, transform: 'translate(0, 0)' },
-      ],
-      {
-        delay: movedSlotIndex * 70,
-        duration: 520,
-        easing: 'cubic-bezier(0.2, 0, 0, 1)',
-        fill: 'both',
-      },
-    )
-
-    animation.addEventListener('finish', () => {
-      archiveReflowAnimations = archiveReflowAnimations.filter((item) => item !== animation)
-    })
-    archiveReflowAnimations.push(animation)
-    movedSlotIndex += 1
-  }
-}
-
-function removeEventAfterAnimation(eventId: string) {
-  cancelArchiveReflowAnimations()
   const previousRects = collectArchiveSlotRects()
   events.value = events.value.filter((event) => event.id !== eventId)
   removingEventIds.value = cloneIdSet(removingEventIds.value, eventId, 'delete')
   confirmingDeleteId.value = ''
   currentPage.value = Math.min(currentPage.value, pageCount.value)
-  void animateArchiveReflow(previousRects)
+  await nextTick()
+
+  if (!isArchiveViewActive) {
+    return
+  }
+
+  withContext(() => animateFlipReflow(previousRects, archiveGridRef.value))
+}
+
+function animateStickerRemoval(eventId: string) {
+  if (!isArchiveViewActive) {
+    return
+  }
+
+  const card = findArchiveEventCard(eventId)
+
+  if (!card || prefersReducedMotion()) {
+    void removeEventAfterAnimation(eventId)
+    return
+  }
+
+  withContext(() => {
+    gsap.to(card, {
+      x: 220,
+      y: -82,
+      rotation: '+=20',
+      autoAlpha: 0,
+      duration: 0.68,
+      ease: 'power3.in',
+      onComplete: () => {
+        if (!isArchiveViewActive) {
+          return
+        }
+
+        void removeEventAfterAnimation(eventId)
+      },
+    })
+  })
 }
 
 async function requestDeleteEvent(event: EventRecord) {
-  if (isDeleting(event.id) || isRemoving(event.id)) {
+  if (!isArchiveViewActive || isDeleting(event.id) || isRemoving(event.id)) {
     return
   }
 
@@ -226,21 +220,23 @@ async function requestDeleteEvent(event: EventRecord) {
   try {
     await deleteEventRecord(event.id)
     clearArchiveInsightCache()
+
+    if (!isArchiveViewActive) {
+      return
+    }
+
     removingEventIds.value = cloneIdSet(removingEventIds.value, event.id, 'add')
+    animateStickerRemoval(event.id)
   } catch (error) {
+    if (!isArchiveViewActive) {
+      return
+    }
+
     deleteError.value = error instanceof Error ? error.message : '事件删除失败，请稍后重试'
   } finally {
-    deletingEventIds.value = cloneIdSet(deletingEventIds.value, event.id, 'delete')
-  }
-}
-
-function handleStickerAnimationEnd(event: AnimationEvent, eventId: string) {
-  if (
-    event.animationName === 'archive-sticker-wind-away' &&
-    event.currentTarget === event.target &&
-    isRemoving(eventId)
-  ) {
-    removeEventAfterAnimation(eventId)
+    if (isArchiveViewActive) {
+      deletingEventIds.value = cloneIdSet(deletingEventIds.value, event.id, 'delete')
+    }
   }
 }
 
@@ -253,27 +249,43 @@ function goToNextPage() {
 }
 
 async function loadArchive() {
+  if (!isArchiveViewActive) {
+    return
+  }
+
   isLoading.value = true
   loadError.value = ''
 
   try {
     const response = await fetchEventArchive()
+
+    if (!isArchiveViewActive) {
+      return
+    }
+
     events.value = response.events
     currentPage.value = 1
   } catch (error) {
+    if (!isArchiveViewActive) {
+      return
+    }
+
     loadError.value =
       error instanceof Error ? error.message : '事件档案加载失败，请稍后重试'
   } finally {
-    isLoading.value = false
+    if (isArchiveViewActive) {
+      isLoading.value = false
+    }
   }
 }
 
 onMounted(() => {
+  isArchiveViewActive = true
   void loadArchive()
 })
 
 onBeforeUnmount(() => {
-  cancelArchiveReflowAnimations()
+  isArchiveViewActive = false
 })
 </script>
 
@@ -399,10 +411,8 @@ onBeforeUnmount(() => {
                 {
                   'archive-event-card-confirming': confirmingDeleteId === event.id,
                   'archive-event-card-deleting': isDeleting(event.id),
-                  'archive-event-card-removing': isRemoving(event.id),
                 },
               ]"
-              @animationend="handleStickerAnimationEnd($event, event.id)"
             >
               <button
                 class="archive-delete-corner pop-shadow"
