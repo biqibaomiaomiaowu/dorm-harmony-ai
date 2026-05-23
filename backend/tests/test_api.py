@@ -900,6 +900,7 @@ def test_review_endpoint_persists_report_history(tmp_path):
         json={
             "conversation_id": "conversation-1",
             "scenario": "舍友晚上打游戏声音很大，影响睡眠。",
+            "roommate_names": {"roommate_a": "小安"},
             "dialogue": [
                 {"speaker": "user", "message": "能不能晚上小声一点？"},
                 {"speaker": "roommate_a", "message": "我会注意音量。"},
@@ -920,6 +921,7 @@ def test_review_endpoint_persists_report_history(tmp_path):
     detail_body = detail.json()
     assert detail_body["id"] == report_id
     assert detail_body["request"]["conversation_id"] == "conversation-1"
+    assert detail_body["request"]["roommate_names"] == {"roommate_a": "小安"}
     assert detail_body["response"] == create.json()
     assert [message["speaker"] for message in detail_body["dialogue"]] == [
         "user",
@@ -1061,6 +1063,35 @@ def test_review_history_detail_returns_404_for_missing_report(tmp_path):
     response = client.get("/api/reviews/missing-report")
 
     assert response.status_code == 404
+
+
+def test_review_history_delete_removes_report_and_returns_404_afterward(tmp_path):
+    store = SQLiteReviewHistoryStore(tmp_path / "reviews.sqlite3")
+    app.dependency_overrides[get_ai_service] = lambda: FakeAIService()
+    app.dependency_overrides[get_review_history_store] = lambda: store
+
+    create = client.post(
+        "/api/review",
+        json={
+            "conversation_id": "conversation-delete",
+            "scenario": "舍友轮流倒垃圾没有按约定执行。",
+            "dialogue": [
+                {"speaker": "user", "message": "这周能不能按值日表倒垃圾？"},
+                {"speaker": "roommate_a", "message": "可以，我今天补上。"},
+            ],
+        },
+    )
+    report_id = client.get("/api/reviews").json()["reports"][0]["id"]
+    deleted = client.delete(f"/api/reviews/{report_id}")
+    missing_detail = client.get(f"/api/reviews/{report_id}")
+    empty_listing = client.get("/api/reviews")
+    missing_delete = client.delete("/api/reviews/missing-report")
+
+    assert create.status_code == 200
+    assert deleted.status_code == 204
+    assert missing_detail.status_code == 404
+    assert empty_listing.json()["reports"] == []
+    assert missing_delete.status_code == 404
 
 
 def test_review_endpoint_accepts_frontend_display_payload_until_ai_config_check():

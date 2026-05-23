@@ -1472,8 +1472,39 @@ def _normalize_roommate_reply(
         update={
             "roommate": roommate.name,
             "personality": roommate.personality_tag,
+            "message": _replace_internal_roommate_references(
+                reply.message,
+                roommate_by_id,
+            ),
         }
     )
+
+
+def _replace_internal_roommate_references(
+    message: str,
+    roommate_by_id: dict[str, RoommateProfile],
+) -> str:
+    """把模型误写进正文的内部舍友 id 或自定义 id 后缀替换为展示姓名。"""
+    normalized = message
+    for roommate_id in sorted(roommate_by_id, key=len, reverse=True):
+        roommate = roommate_by_id[roommate_id]
+        normalized = re.sub(
+            rf"(?<![A-Za-z0-9_]){re.escape(roommate_id)}(?![A-Za-z0-9_])",
+            roommate.name,
+            normalized,
+        )
+
+        suffix = roommate_id.removeprefix("roommate_")
+        if len(suffix) < 2 or suffix == roommate.name:
+            continue
+
+        normalized = re.sub(
+            rf"(?<![A-Za-z0-9_]){re.escape(suffix)}(?![A-Za-z0-9_])",
+            roommate.name,
+            normalized,
+        )
+
+    return normalized
 
 
 LangChainOpenAIRunner = LangChainDeepSeekRunner

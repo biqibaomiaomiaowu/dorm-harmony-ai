@@ -67,6 +67,8 @@ ROOMMATE_REPLY_SYSTEM_PROMPT = (
     "请只为当前指定的一个虚拟舍友生成一条回复。"
     "回复必须参考历史对话、当前用户发言、事件档案摘要和本轮已生成的前序舍友回复，"
     "并符合该舍友的 personality_tag 和 traits。"
+    "message 正文中称呼任何虚拟舍友时，必须使用 current_roommate 或 same_turn_replies 中的 roommate 姓名，"
+    "不得出现 roommate_id、roommate_a、roommate_b、roommate_c、custom 后缀或 aa 这类内部标识。"
     "请只输出一个合法 JSON object，不要输出 Markdown、解释或额外文本。"
     "JSON 必须严格使用："
     '{"roommate_id":"roommate_a","roommate":"舍友 A","personality":"直接型","message":"回复内容"}。'
@@ -86,6 +88,8 @@ REVIEW_SYSTEM_PROMPT = (
     "message_index 必须对应原始 dialogue 中该用户发言的 0 基下标。"
     "只能选择 speaker=user 的消息，original_message 必须来自对应原文，"
     "不能选择虚拟舍友或系统消息，也不能编造 dialogue 中不存在的原话。"
+    "dialogue 中的 roommate_* 只是内部 speaker id；如果需要在自然语言中称呼舍友，"
+    "必须使用请求提供的 roommate_names 中的姓名，不得输出 roommate_*、custom 后缀或 aa 这类内部标识。"
     "performance_scores 是表现总结评分，必须包含 clarity、empathy、resolution 三个字段，"
     "分别表示表达清晰度、共情能力、问题解决度，值必须是 0-100 的整数。"
     "communication_plan 必须包含 opening、specific_request、fallback_plan 三段："
@@ -291,10 +295,16 @@ def build_review_messages(
         if request.original_event is not None
         else "未提供"
     )
+    roommate_names = (
+        json.dumps(request.roommate_names, ensure_ascii=False, sort_keys=True)
+        if request.roommate_names
+        else "未提供"
+    )
     human_prompt = (
         "请基于以下宿舍沟通对话做结构化复盘。\n"
         "dialogue 每行开头的方括号数字就是原始 0 基 message_index。\n"
         f"scenario: {request.scenario}\n"
+        f"roommate_names: {roommate_names}\n"
         f"dialogue:\n{_serialize_indexed_dialogue(review_dialogue)}\n"
         f"original_event: {original_event}"
     )

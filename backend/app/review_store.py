@@ -159,6 +159,21 @@ class SQLiteReviewHistoryStore:
 
         return self._row_to_detail(row)
 
+    def delete(self, review_id: str) -> bool:
+        """删除单条复盘报告，返回是否实际删除。"""
+        with self._lock:
+            with self._write_connection() as connection:
+                cursor = connection.execute(
+                    """
+                    DELETE FROM review_reports
+                    WHERE id = ?
+                    """,
+                    (review_id,),
+                )
+                deleted = cursor.rowcount > 0
+
+        return deleted
+
     def _connect(self) -> sqlite3.Connection:
         """创建 SQLite 连接并启用 Row 映射。"""
         connection = sqlite3.connect(self._path, detect_types=0, timeout=5)

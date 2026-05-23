@@ -8,7 +8,7 @@ from threading import Lock
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from app.ai_service import (
     AIServiceConfigurationError,
@@ -351,3 +351,15 @@ def get_review_report(
         raise HTTPException(status_code=404, detail="复盘历史不存在或已被删除。")
 
     return report
+
+
+@app.delete("/api/reviews/{review_id}", status_code=204)
+def delete_review_report(
+    review_id: str,
+    review_store: SQLiteReviewHistoryStore = Depends(get_review_history_store),
+) -> Response:
+    """删除单条沟通复盘历史。"""
+    if not review_store.delete(review_id):
+        raise HTTPException(status_code=404, detail="复盘历史不存在或已被删除。")
+
+    return Response(status_code=204)

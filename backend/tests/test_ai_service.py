@@ -1218,6 +1218,67 @@ def test_service_normalizes_generated_reply_identity_to_requested_roommate_profi
     assert response.replies[0].personality == "直接型"
 
 
+def test_service_replaces_internal_roommate_references_in_reply_message():
+    request = SimulateRequest(
+        scenario="卫生值日",
+        user_message="今天垃圾谁倒？",
+        roommates=[
+            {
+                "id": "roommate_aa",
+                "name": "小安",
+                "personality_tag": "直接型",
+                "tag_mode": "custom",
+                "traits": {
+                    "directness": 4,
+                    "emotional_reactivity": 2,
+                    "avoidance": 1,
+                    "empathy": 3,
+                    "solution_willingness": 4,
+                    "boundary_sensitivity": 2,
+                },
+            },
+            {
+                "id": "roommate_c",
+                "name": "小陈",
+                "personality_tag": "调和型",
+                "tag_mode": "preset",
+                "preset_key": "harmony",
+            },
+        ],
+    )
+    runner = ScriptedMultiAgentRunner(
+        plan=[{"roommate_id": "roommate_c"}],
+        replies=[
+            {
+                "roommate_id": "roommate_c",
+                "roommate": "roommate_c",
+                "personality": "调和型",
+                "message": "你（roommate_c）倒垃圾，其他人各自收拾桌面，行不？以后值日表就按aa说的。",
+            }
+        ],
+    )
+    service = DormHarmonyAIService(runner=runner, memory=ai_service.ConversationMemory())
+
+    response = service.simulate(request)
+
+    assert response.replies[0].roommate == "小陈"
+    assert response.replies[0].message == "你（小陈）倒垃圾，其他人各自收拾桌面，行不？以后值日表就按小安说的。"
+    assert "roommate_c" not in response.replies[0].message
+    assert "aa" not in response.replies[0].message
+
+
+def test_internal_roommate_reference_replacement_keeps_longer_unknown_tokens():
+    roommate = default_roommate_profiles()[2]
+    roommate_by_id = {roommate.id: roommate}
+
+    message = ai_service._replace_internal_roommate_references(
+        "roommate_c 可以协调，但 roommate_c_extra 不是当前舍友。",
+        roommate_by_id,
+    )
+
+    assert message == "舍友 C 可以协调，但 roommate_c_extra 不是当前舍友。"
+
+
 def test_service_rejects_generated_reply_for_different_planned_roommate():
     request = SimulateRequest(scenario="噪音冲突", user_message="晚上能不能小声一点？")
     runner = ScriptedMultiAgentRunner(

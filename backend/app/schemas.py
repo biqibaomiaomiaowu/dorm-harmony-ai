@@ -719,6 +719,7 @@ class ReviewRequest(BaseModel):
     conversation_id: str | None = Field(default=None, max_length=100)
     scenario: str = Field(max_length=300)
     dialogue: list[DialogueMessage] = Field(default_factory=list, max_length=50)
+    roommate_names: dict[DialogueSpeaker, str] = Field(default_factory=dict, max_length=20)
     original_event: ReviewOriginalEvent | None = None
 
     @field_validator("conversation_id", mode="before")
@@ -745,6 +746,32 @@ class ReviewRequest(BaseModel):
             raise ValueError("scenario must not be empty")
 
         return scenario
+
+    @field_validator("roommate_names", mode="before")
+    @classmethod
+    def normalize_roommate_names(cls, value: object) -> dict[str, str]:
+        """保留复盘历史展示所需的舍友 id 到用户自定义姓名映射。"""
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("roommate_names must be an object")
+
+        roommate_names: dict[str, str] = {}
+        for raw_key, raw_name in value.items():
+            if not isinstance(raw_key, str) or not isinstance(raw_name, str):
+                raise ValueError("roommate_names keys and values must be strings")
+
+            key = raw_key.strip()
+            name = raw_name.strip()
+            if not key or not name:
+                continue
+            if not key.startswith("roommate_") or len(key) > 64:
+                raise ValueError("roommate_names keys must be roommate_* ids")
+            if len(name) > 20:
+                raise ValueError("roommate_names values must be at most 20 characters")
+            roommate_names[key] = name
+
+        return roommate_names
 
 
 class ReviewRewriteSuggestion(BaseModel):
