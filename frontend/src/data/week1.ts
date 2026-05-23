@@ -212,6 +212,7 @@ export interface ReviewRequest {
   scenario: string
   conversation_id?: string
   dialogue?: ReviewDialogueLine[]
+  roommate_names?: Partial<Record<ReviewDialogueSpeaker, string>>
   original_event?: ReviewOriginalEvent
 }
 

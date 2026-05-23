@@ -434,7 +434,6 @@ const currentScenePrompt = computed(() => {
   return `当前场景：${currentScene.value}。请先输入一句你准备现实沟通时使用的话。`
 })
 const hasUserMessage = computed(() => userMessage.value.trim().length > 0)
-const canAddRoommate = computed(() => roommates.value.length < 5 && !hasActiveConversation.value)
 const canEditRoommates = computed(() => !hasActiveConversation.value)
 const canDeleteDraft = computed(() => editingIndex.value !== null && roommates.value.length > 1)
 const archiveSwitchLabel = computed(() => {

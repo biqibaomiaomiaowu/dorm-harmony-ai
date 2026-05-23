@@ -1,6 +1,7 @@
 import {
   isReviewResponse,
   isReviewResponsePayload,
+  mapEventTypeToAnalyzeApi,
   normalizeReviewResponse,
   type ReviewDialogueLine,
   type ReviewRequest,
@@ -48,6 +49,17 @@ function assertOptionalString(value: unknown, field: string): string | undefined
   }
 
   return assertString(value, field)
+}
+
+function normalizeReviewHistoryEventType(
+  value: unknown,
+): NonNullable<ReviewRequest['original_event']>['event_type'] | undefined {
+  const eventType = assertOptionalString(value, 'request.original_event.event_type')
+  if (!eventType) {
+    return undefined
+  }
+
+  return mapEventTypeToAnalyzeApi(eventType)
 }
 
 function assertFiniteNumber(value: unknown, field: string): number {
@@ -100,6 +112,32 @@ function assertReviewDialogue(value: unknown, field: string): ReviewDialogueLine
   return value.map((item, index) => assertReviewDialogueLine(item, `${field}.${index}`))
 }
 
+function assertRoommateNames(
+  value: unknown,
+): Partial<Record<ReviewDialogueLine['speaker'], string>> {
+  if (typeof value === 'undefined' || value === null) {
+    return {}
+  }
+  if (!isRecord(value)) {
+    throw new Error('复盘历史字段异常：request.roommate_names')
+  }
+
+  return Object.entries(value).reduce<Partial<Record<ReviewDialogueLine['speaker'], string>>>(
+    (roommateNames, [speaker, name]) => {
+      if (!speaker.startsWith('roommate_') || typeof name !== 'string') {
+        throw new Error('复盘历史字段异常：request.roommate_names')
+      }
+
+      const trimmedName = name.trim()
+      if (trimmedName) {
+        roommateNames[speaker as ReviewDialogueLine['speaker']] = trimmedName
+      }
+      return roommateNames
+    },
+    {},
+  )
+}
+
 function assertReviewRequest(value: unknown): ReviewRequest {
   if (!isRecord(value)) {
     throw new Error('复盘历史字段异常：request')
@@ -118,33 +156,26 @@ function assertReviewRequest(value: unknown): ReviewRequest {
     request.dialogue = assertReviewDialogue(value.dialogue, 'request.dialogue')
   }
 
-  if (typeof value.original_event !== 'undefined') {
+  const roommateNames = assertRoommateNames(value.roommate_names)
+  if (Object.keys(roommateNames).length > 0) {
+    request.roommate_names = roommateNames
+  }
+
+  if (typeof value.original_event !== 'undefined' && value.original_event !== null) {
     if (!isRecord(value.original_event)) {
       throw new Error('复盘历史字段异常：request.original_event')
     }
 
     const originalEvent: NonNullable<ReviewRequest['original_event']> = {}
-    if (typeof value.original_event.event_type !== 'undefined') {
-      const eventType = assertString(
-        value.original_event.event_type,
-        'request.original_event.event_type',
-      )
-      if (
-        eventType !== 'noise' &&
-        eventType !== 'schedule' &&
-        eventType !== 'hygiene' &&
-        eventType !== 'cost' &&
-        eventType !== 'privacy' &&
-        eventType !== 'emotion'
-      ) {
-        throw new Error('复盘历史字段异常：request.original_event.event_type')
-      }
-      originalEvent.event_type = eventType as NonNullable<
-        ReviewRequest['original_event']
-      >['event_type']
+    const eventType = normalizeReviewHistoryEventType(value.original_event.event_type)
+    if (eventType) {
+      originalEvent.event_type = eventType
     }
 
-    if (typeof value.original_event.risk_level !== 'undefined') {
+    if (
+      typeof value.original_event.risk_level !== 'undefined' &&
+      value.original_event.risk_level !== null
+    ) {
       const riskLevel = assertString(
         value.original_event.risk_level,
         'request.original_event.risk_level',
@@ -162,7 +193,10 @@ function assertReviewRequest(value: unknown): ReviewRequest {
       >['risk_level']
     }
 
-    if (typeof value.original_event.pressure_score !== 'undefined') {
+    if (
+      typeof value.original_event.pressure_score !== 'undefined' &&
+      value.original_event.pressure_score !== null
+    ) {
       originalEvent.pressure_score = assertFiniteNumber(
         value.original_event.pressure_score,
         'request.original_event.pressure_score',
@@ -237,6 +271,12 @@ async function readJsonResponse(response: Response, fallbackMessage: string): Pr
   return (await response.json()) as unknown
 }
 
+async function readEmptyResponse(response: Response, fallbackMessage: string): Promise<void> {
+  if (!response.ok) {
+    throw new Error(`${fallbackMessage}（接口返回 ${response.status}）`)
+  }
+}
+
 export async function fetchReviewHistory(limit = 20): Promise<ReviewHistoryResponse> {
   const params = new URLSearchParams()
   params.set('limit', String(limit))
@@ -250,4 +290,11 @@ export async function fetchReviewReport(id: string): Promise<ReviewReportDetail>
   const response = await fetch(`/api/reviews/${encodeURIComponent(id)}`)
   const raw = await readJsonResponse(response, '复盘报告加载失败')
   return assertReviewReportDetail(raw)
+}
+
+export async function deleteReviewReport(id: string): Promise<void> {
+  const response = await fetch(`/api/reviews/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+  await readEmptyResponse(response, '复盘报告删除失败')
 }

@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 
 import {
+  deleteReviewReport,
   fetchReviewHistory,
   fetchReviewReport,
   type ReviewReportDetail,
@@ -87,12 +88,12 @@ const reviewHistoryError = ref('')
 const isHistoryLoading = ref(false)
 const isReportSwitching = ref(false)
 const activeReviewId = ref<string | null>(null)
+const deletingReviewIds = ref<Set<string>>(new Set())
+const pendingDeleteReviewId = ref<string | null>(null)
 const isDialogueModalOpen = ref(false)
 const dialogueModalRef = ref<HTMLElement | null>(null)
 const dialogueTriggerRef = ref<HTMLButtonElement | null>(null)
-const reviewExportRef = ref<HTMLElement | null>(null)
 const reviewExportError = ref('')
-const isExportingImage = ref(false)
 const animatedPerformanceScores = ref({ clarity: 0, empathy: 0, resolution: 0 })
 let reviewScoresAnimationFrame = 0
 let isReviewViewActive = false
@@ -105,6 +106,7 @@ function requestFingerprint(value: ReviewRequest): string {
   return JSON.stringify({
     scenario: value.scenario,
     conversation_id: value.conversation_id,
+    roommate_names: value.roommate_names,
     original_event: value.original_event,
   })
 }
@@ -332,7 +334,17 @@ const dialogueStats = computed(() => {
     roommateReplies: dialogue.filter((line) => line.speaker.startsWith('roommate_')).length,
   }
 })
-const hasReviewResult = computed(() => !isLoading.value && !reviewError.value)
+const hasVisibleReviewReport = computed(
+  () => !isLoading.value && (currentReviewSnapshot.value !== null || activeReviewId.value !== null),
+)
+const canShowReviewWorkspace = computed(
+  () =>
+    !isLoading.value &&
+    (hasVisibleReviewReport.value ||
+      reviewHistory.value.length > 0 ||
+      isHistoryLoading.value ||
+      Boolean(reviewHistoryError.value)),
+)
 const suggestionCards = computed<ReviewRewriteSuggestion[]>(() =>
   reviewResponse.value.rewrite_suggestions.length > 0
     ? reviewResponse.value.rewrite_suggestions
@@ -345,6 +357,14 @@ const currentReportRail = computed(() => ({
   scenario: currentReviewSnapshot.value?.request.scenario || reviewRequest.value.scenario,
   summary: currentReviewSnapshot.value?.response.summary || reviewResponse.value.summary,
 }))
+const visibleReviewHistory = computed<ReviewReportSummary[]>(() => {
+  const duplicateId = findCurrentReportDuplicateId()
+  if (!duplicateId) {
+    return reviewHistory.value
+  }
+
+  return reviewHistory.value.filter((report) => report.id !== duplicateId)
+})
 const practiceMessage = computed(() => {
   const rewritten = reviewResponse.value.rewritten_message.trim()
   if (rewritten) {
@@ -624,12 +644,16 @@ function dialogueFromReportDetail(detail: ReviewReportDetail): ReviewDialogueLin
   ]
 }
 
+function hasReviewableDialogue(dialogue: ReviewDialogueLine[]) {
+  return dialogue.some((line) => line.speaker === 'user')
+}
+
 function snapshotFromReportDetail(detail: ReviewReportDetail): ReviewSnapshot {
   return {
     request: detail.request,
     response: detail.response,
     dialogue: dialogueFromReportDetail(detail),
-    roommateNames: {},
+    roommateNames: detail.request.roommate_names ?? {},
   }
 }
 
@@ -651,6 +675,30 @@ function reportAverageScore(report: ReviewReportSummary) {
   return Math.round((report.score_clarity + report.score_empathy + report.score_resolution) / 3)
 }
 
+function reportMatchesCurrentSnapshot(report: ReviewReportSummary, snapshot: ReviewSnapshot) {
+  return (
+    report.conversation_id === (snapshot.request.conversation_id ?? null) &&
+    report.scenario === snapshot.request.scenario &&
+    report.summary === snapshot.response.summary &&
+    report.score_clarity === normalizeReviewScore(snapshot.response.performance_scores.clarity) &&
+    report.score_empathy === normalizeReviewScore(snapshot.response.performance_scores.empathy) &&
+    report.score_resolution ===
+      normalizeReviewScore(snapshot.response.performance_scores.resolution)
+  )
+}
+
+function findCurrentReportDuplicateId() {
+  const snapshot = currentReviewSnapshot.value
+  if (!snapshot) {
+    return null
+  }
+
+  const duplicateReport = reviewHistory.value.find((report) =>
+    reportMatchesCurrentSnapshot(report, snapshot),
+  )
+  return duplicateReport?.id ?? null
+}
+
 async function loadReviewHistory() {
   isHistoryLoading.value = true
   reviewHistoryError.value = ''
@@ -658,6 +706,12 @@ async function loadReviewHistory() {
   try {
     const result = await fetchReviewHistory(20)
     reviewHistory.value = result.reports
+    if (
+      pendingDeleteReviewId.value &&
+      !result.reports.some((report) => report.id === pendingDeleteReviewId.value)
+    ) {
+      pendingDeleteReviewId.value = null
+    }
   } catch (error) {
     reviewHistoryError.value =
       error instanceof Error && error.message ? error.message : '复盘历史加载失败'
@@ -684,6 +738,83 @@ async function selectHistoryReport(report: ReviewReportSummary) {
       error instanceof Error && error.message ? error.message : '复盘报告加载失败'
   } finally {
     isReportSwitching.value = false
+  }
+}
+
+async function selectFirstHistoryReportIfNeeded() {
+  if (currentReviewSnapshot.value || activeReviewId.value || reviewHistory.value.length === 0) {
+    return
+  }
+
+  const firstReport = reviewHistory.value[0]
+  if (firstReport) {
+    await selectHistoryReport(firstReport)
+  }
+}
+
+function setHistoryDeletingState(reportId: string, isDeleting: boolean) {
+  const nextIds = new Set(deletingReviewIds.value)
+  if (isDeleting) {
+    nextIds.add(reportId)
+  } else {
+    nextIds.delete(reportId)
+  }
+  deletingReviewIds.value = nextIds
+}
+
+function isDeletingHistoryReport(reportId: string) {
+  return deletingReviewIds.value.has(reportId)
+}
+
+function isPendingDeleteHistoryReport(reportId: string) {
+  return pendingDeleteReviewId.value === reportId
+}
+
+async function selectFallbackReportAfterDelete(deletedReportId: string) {
+  if (activeReviewId.value !== deletedReportId) {
+    return
+  }
+
+  if (currentReviewSnapshot.value) {
+    applyReviewSnapshot(currentReviewSnapshot.value, null)
+    await nextTick()
+    animateReviewScores()
+    return
+  }
+
+  activeReviewId.value = null
+  const firstReport = reviewHistory.value[0]
+  if (firstReport) {
+    await selectHistoryReport(firstReport)
+  }
+}
+
+async function deleteHistoryReport(report: ReviewReportSummary) {
+  if (isDeletingHistoryReport(report.id)) {
+    return
+  }
+
+  if (pendingDeleteReviewId.value !== report.id) {
+    pendingDeleteReviewId.value = report.id
+    return
+  }
+
+  setHistoryDeletingState(report.id, true)
+  reviewHistoryError.value = ''
+
+  try {
+    await deleteReviewReport(report.id)
+    reviewHistory.value = reviewHistory.value.filter(
+      (historyReport) => historyReport.id !== report.id,
+    )
+    pendingDeleteReviewId.value = null
+    await selectFallbackReportAfterDelete(report.id)
+  } catch (error) {
+    pendingDeleteReviewId.value = null
+    reviewHistoryError.value =
+      error instanceof Error && error.message ? error.message : '复盘历史删除失败'
+  } finally {
+    setHistoryDeletingState(report.id, false)
   }
 }
 
@@ -847,148 +978,6 @@ function exportReviewMarkdown() {
   downloadBlob(blob, `review-report-${reviewFileStamp()}.md`)
 }
 
-function copyComputedStyles(source: Element, target: Element) {
-  const sourceElements = [source, ...source.querySelectorAll('*')]
-  const targetElements = [target, ...target.querySelectorAll('*')]
-
-  sourceElements.forEach((sourceElement, index) => {
-    const targetElement = targetElements[index] as HTMLElement | undefined
-    if (!targetElement) {
-      return
-    }
-
-    const computedStyle = window.getComputedStyle(sourceElement)
-    for (let propertyIndex = 0; propertyIndex < computedStyle.length; propertyIndex += 1) {
-      const property = computedStyle.item(propertyIndex)
-      targetElement.style.setProperty(
-        property,
-        computedStyle.getPropertyValue(property),
-        computedStyle.getPropertyPriority(property),
-      )
-    }
-  })
-}
-
-function loadImage(url: string) {
-  return new Promise<HTMLImageElement>((resolve, reject) => {
-    const image = new Image()
-    image.onload = () => resolve(image)
-    image.onerror = () => reject(new Error('image load failed'))
-    image.src = url
-  })
-}
-
-function buildDialogueExportSection() {
-  const section = document.createElement('section')
-  section.style.cssText =
-    'display:grid;gap:12px;margin-top:24px;border:4px solid #2b1f22;border-radius:18px;background:#fffaf2;padding:18px;font-family:inherit;color:#2b1f22;'
-
-  const heading = document.createElement('h2')
-  heading.textContent = '完整对话记录'
-  heading.style.cssText = 'margin:0;font-size:22px;'
-  section.appendChild(heading)
-
-  reviewDialogue.value.forEach((line, index) => {
-    const row = document.createElement('p')
-    row.textContent = `${index + 1}. ${dialogueSpeakerLabel(line.speaker)}：${line.message}`
-    row.style.cssText =
-      'margin:0;border:2px solid #2b1f22;border-radius:12px;background:#ffffff;padding:10px 12px;font-size:14px;font-weight:700;line-height:1.55;'
-    section.appendChild(row)
-  })
-
-  if (!reviewDialogue.value.length) {
-    const empty = document.createElement('p')
-    empty.textContent = '暂无对话记录'
-    empty.style.cssText = 'margin:0;color:#6b5a60;font-weight:700;'
-    section.appendChild(empty)
-  }
-
-  return section
-}
-
-function measureExportClone(clone: HTMLElement, width: number) {
-  const host = document.createElement('div')
-  host.style.cssText =
-    'position:fixed;left:-10000px;top:0;z-index:-1;visibility:hidden;pointer-events:none;'
-  clone.style.width = `${width}px`
-  host.appendChild(clone)
-  document.body.appendChild(host)
-
-  try {
-    return Math.ceil(clone.scrollHeight || clone.getBoundingClientRect().height)
-  } finally {
-    host.remove()
-  }
-}
-
-async function exportReviewImage() {
-  reviewExportError.value = ''
-  isExportingImage.value = true
-
-  try {
-    const element = reviewExportRef.value
-    if (!element) {
-      throw new Error('export target missing')
-    }
-
-    const rect = element.getBoundingClientRect()
-    const width = Math.ceil(rect.width)
-    const height = Math.ceil(rect.height)
-    if (width <= 0 || height <= 0) {
-      throw new Error('export target has no size')
-    }
-
-    const clone = element.cloneNode(true) as HTMLElement
-    copyComputedStyles(element, clone)
-    clone.appendChild(buildDialogueExportSection())
-    clone.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml')
-    clone.style.width = `${width}px`
-    clone.style.background = '#fffaf2'
-    clone.style.padding = '24px'
-    const exportHeight = Math.max(height, measureExportClone(clone, width))
-
-    const serialized = new XMLSerializer().serializeToString(clone)
-    const svg = [
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${exportHeight}" viewBox="0 0 ${width} ${exportHeight}">`,
-      `<foreignObject width="100%" height="100%">${serialized}</foreignObject>`,
-      `</svg>`,
-    ].join('')
-    const svgUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }))
-
-    try {
-      const image = await loadImage(svgUrl)
-      const canvas = document.createElement('canvas')
-      const scale = Math.min(window.devicePixelRatio || 1, 2)
-      canvas.width = Math.round(width * scale)
-      canvas.height = Math.round(exportHeight * scale)
-      const context = canvas.getContext('2d')
-      if (!context) {
-        throw new Error('canvas context missing')
-      }
-
-      context.scale(scale, scale)
-      context.fillStyle = '#fffaf2'
-      context.fillRect(0, 0, width, exportHeight)
-      context.drawImage(image, 0, 0, width, exportHeight)
-
-      const pngBlob = await new Promise<Blob | null>((resolve) =>
-        canvas.toBlob(resolve, 'image/png'),
-      )
-      if (!pngBlob) {
-        throw new Error('png blob missing')
-      }
-
-      downloadBlob(pngBlob, `review-report-${reviewFileStamp()}.png`)
-    } finally {
-      URL.revokeObjectURL(svgUrl)
-    }
-  } catch {
-    reviewExportError.value = '图片导出失败，请改用 Markdown 导出。'
-  } finally {
-    isExportingImage.value = false
-  }
-}
-
 function practiceAgain() {
   void router.push({
     name: 'simulate',
@@ -1012,7 +1001,18 @@ async function initReview() {
     scenario: context.scenario,
     conversation_id: context.conversationId,
     dialogue: context.conversationId ? undefined : context.dialogue.slice(-50),
+    roommate_names: context.roommateNames,
     original_event: context.original_event,
+  }
+
+  await loadReviewHistory()
+
+  if (!hasReviewableDialogue(context.dialogue)) {
+    reviewError.value = '本轮没有可复盘的模拟对话，未生成新的复盘报告。'
+    currentReviewSnapshot.value = null
+    isLoading.value = false
+    await selectFirstHistoryReportIfNeeded()
+    return
   }
 
   const cached = hydrateStoredReview(reviewRequest.value, context.dialogue)
@@ -1020,7 +1020,6 @@ async function initReview() {
     reviewResponse.value = cached
     currentReviewSnapshot.value = createReviewSnapshot()
     isLoading.value = false
-    await loadReviewHistory()
     await nextTick()
     animateReviewScores()
     return
@@ -1054,6 +1053,7 @@ async function initReview() {
   } catch (error) {
     reviewError.value =
       error instanceof Error && error.message ? error.message : '复盘生成失败，请返回模拟页后重试'
+    await selectFirstHistoryReportIfNeeded()
   } finally {
     if (isLoading.value) {
       isLoading.value = false
@@ -1130,57 +1130,92 @@ onBeforeUnmount(() => {
       </Transition>
 
       <Transition name="review-result-transition" mode="out-in">
-        <div v-if="hasReviewResult" class="review-workspace">
-          <aside class="review-history-rail pop-card pop-shadow" aria-label="复盘历史">
+        <div v-if="canShowReviewWorkspace" class="review-workspace">
+          <section class="review-history-strip pop-card pop-shadow" aria-label="复盘历史">
             <header>
               <span class="material-symbol" aria-hidden="true">history</span>
               <div>
                 <h2>历史复盘</h2>
-                <p>{{ isHistoryLoading ? '正在同步...' : `最近 ${reviewHistory.length} 条` }}</p>
+                <p>
+                  {{ isHistoryLoading ? '正在同步...' : `最近 ${visibleReviewHistory.length} 条` }}
+                </p>
               </div>
             </header>
 
-            <button
-              class="review-history-item"
-              :class="{ active: activeReviewId === null }"
-              type="button"
-              :disabled="isReportSwitching"
-              @click="restoreCurrentReport"
-            >
-              <span class="review-history-score">当前</span>
-              <span>
-                <strong>{{ currentReportRail.scenario || '当前复盘报告' }}</strong>
-                <small>{{ currentReportRail.summary }}</small>
-              </span>
-            </button>
-
-            <div class="review-history-list">
-              <button
-                v-for="report in reviewHistory"
-                :key="report.id"
-                class="review-history-item"
-                :class="{ active: activeReviewId === report.id }"
-                type="button"
-                :disabled="isReportSwitching"
-                @click="selectHistoryReport(report)"
+            <TransitionGroup name="review-history-card" tag="div" class="review-history-list">
+              <article
+                v-if="currentReviewSnapshot"
+                key="current-report"
+                class="review-history-card"
               >
-                <span class="review-history-score">{{ reportAverageScore(report) }}</span>
-                <span>
-                  <strong>{{ report.scenario }}</strong>
-                  <small>{{ formatReviewTime(report.created_at) }} · {{ report.summary }}</small>
-                </span>
-              </button>
-            </div>
+                <button
+                  class="review-history-item"
+                  :class="{ active: activeReviewId === null }"
+                  type="button"
+                  :disabled="isReportSwitching"
+                  @click="restoreCurrentReport"
+                >
+                  <span class="review-history-score">当前</span>
+                  <span>
+                    <strong>{{ currentReportRail.scenario || '当前复盘报告' }}</strong>
+                    <small>{{ currentReportRail.summary }}</small>
+                  </span>
+                </button>
+              </article>
+
+              <article
+                v-for="report in visibleReviewHistory"
+                :key="report.id"
+                class="review-history-card"
+              >
+                <button
+                  class="review-history-item"
+                  :class="{ active: activeReviewId === report.id }"
+                  type="button"
+                  :disabled="isReportSwitching || isDeletingHistoryReport(report.id)"
+                  @click="selectHistoryReport(report)"
+                >
+                  <span class="review-history-score">{{ reportAverageScore(report) }}</span>
+                  <span>
+                    <strong>{{ report.scenario }}</strong>
+                    <small>{{ formatReviewTime(report.created_at) }} · {{ report.summary }}</small>
+                  </span>
+                </button>
+                <button
+                  class="review-history-delete"
+                  :class="{ pending: isPendingDeleteHistoryReport(report.id) }"
+                  type="button"
+                  :aria-label="
+                    isPendingDeleteHistoryReport(report.id)
+                      ? `再次点击删除历史复盘：${report.scenario}`
+                      : `删除历史复盘：${report.scenario}`
+                  "
+                  :title="isPendingDeleteHistoryReport(report.id) ? '再次点击删除' : '删除'"
+                  :disabled="isReportSwitching || isDeletingHistoryReport(report.id)"
+                  @click="deleteHistoryReport(report)"
+                >
+                  <span class="material-symbol" aria-hidden="true">
+                    {{
+                      isDeletingHistoryReport(report.id)
+                        ? 'hourglass_top'
+                        : isPendingDeleteHistoryReport(report.id)
+                          ? 'delete_forever'
+                          : 'delete'
+                    }}
+                  </span>
+                </button>
+              </article>
+            </TransitionGroup>
 
             <p v-if="reviewHistoryError" class="review-history-error">
               {{ reviewHistoryError }}
             </p>
-          </aside>
+          </section>
 
           <Transition name="review-report-switch" mode="out-in">
             <div
+              v-if="hasVisibleReviewReport"
               :key="activeReportKey"
-              ref="reviewExportRef"
               class="review-result-stack review-report-export-surface"
             >
               <section class="review-v2-section">
@@ -1318,25 +1353,30 @@ onBeforeUnmount(() => {
                 }}
               </p>
             </div>
+            <section v-else key="empty-history-selection" class="review-block pop-card pop-shadow">
+              <h2>选择历史复盘</h2>
+              <p>本轮未生成新的复盘报告，可以从上方历史列表打开已保存的报告。</p>
+            </section>
           </Transition>
 
           <section class="review-actions">
-            <button class="primary-action pop-shadow" type="button" @click="practiceAgain">
+            <button
+              v-if="hasVisibleReviewReport"
+              class="primary-action pop-shadow"
+              type="button"
+              @click="practiceAgain"
+            >
               再次演练
               <span class="action-icon material-symbol">refresh</span>
             </button>
-            <button class="secondary-action pop-shadow" type="button" @click="exportReviewMarkdown">
-              导出 Markdown
-              <span class="action-icon material-symbol">download</span>
-            </button>
             <button
+              v-if="hasVisibleReviewReport"
               class="secondary-action pop-shadow"
               type="button"
-              :disabled="isExportingImage"
-              @click="exportReviewImage"
+              @click="exportReviewMarkdown"
             >
-              {{ isExportingImage ? '正在导出...' : '导出图片' }}
-              <span class="action-icon material-symbol">image</span>
+              导出 Markdown
+              <span class="action-icon material-symbol">download</span>
             </button>
             <RouterLink class="secondary-action pop-shadow" :to="{ name: 'analysis' }">
               查看压力分析
@@ -1459,33 +1499,33 @@ onBeforeUnmount(() => {
 
 .review-workspace {
   display: grid;
-  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
-  gap: 28px;
+  gap: 24px;
 }
 
-.review-history-rail {
-  position: sticky;
-  top: 24px;
+.review-history-strip {
   display: grid;
   gap: 14px;
+  min-width: 0;
   border: 4px solid var(--ink);
   background: var(--card);
   padding: 16px;
+  overflow: hidden;
 }
 
-.review-history-rail.pop-shadow:hover {
+.review-history-strip.pop-shadow:hover {
   box-shadow: 4px 4px 0 0 var(--shadow-dark);
   transform: none;
 }
 
-.review-history-rail header {
+.review-history-strip header {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-.review-history-rail header > .material-symbol {
+.review-history-strip header > .material-symbol {
   display: inline-grid;
   width: 38px;
   height: 38px;
@@ -1496,27 +1536,56 @@ onBeforeUnmount(() => {
   box-shadow: 2px 2px 0 0 var(--shadow-dark);
 }
 
-.review-history-rail h2,
-.review-history-rail p {
+.review-history-strip h2,
+.review-history-strip p {
   margin: 0;
 }
 
-.review-history-rail h2 {
+.review-history-strip h2 {
   font-size: 1.1rem;
 }
 
-.review-history-rail header p {
+.review-history-strip header p {
   color: var(--ink-soft);
   font-size: 0.78rem;
   font-weight: 800;
 }
 
 .review-history-list {
+  position: relative;
   display: grid;
-  max-height: 420px;
-  gap: 10px;
-  overflow-y: auto;
-  padding-right: 4px;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(220px, 280px);
+  gap: 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 4px 8px 2px;
+  scroll-snap-type: x proximity;
+}
+
+.review-history-card {
+  position: relative;
+  min-width: 0;
+  scroll-snap-align: start;
+}
+
+.review-history-card-enter-active,
+.review-history-card-leave-active,
+.review-history-card-move {
+  transition:
+    opacity 180ms ease,
+    transform 220ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.review-history-card-enter-from,
+.review-history-card-leave-to {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.96);
+}
+
+.review-history-card-leave-active {
+  position: absolute;
+  width: min(280px, calc(100vw - 64px));
 }
 
 .review-history-item {
@@ -1530,7 +1599,8 @@ onBeforeUnmount(() => {
   background: var(--surface-container-low);
   box-shadow: 2px 2px 0 0 var(--shadow-dark);
   color: var(--ink);
-  padding: 10px;
+  min-height: 86px;
+  padding: 10px 46px 10px 10px;
   text-align: left;
   transition:
     background-color 180ms ease,
@@ -1549,6 +1619,44 @@ onBeforeUnmount(() => {
 .review-history-item:disabled {
   cursor: wait;
   opacity: 0.7;
+}
+
+.review-history-delete {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+  background: var(--card);
+  box-shadow: 2px 2px 0 0 var(--shadow-dark);
+  color: var(--ink);
+  transition:
+    background-color 180ms ease,
+    transform 180ms ease;
+}
+
+.review-history-delete:hover:not(:disabled) {
+  background: var(--error-soft);
+  color: var(--error);
+  transform: translate(-1px, -1px);
+}
+
+.review-history-delete.pending {
+  background: var(--error-soft);
+  color: var(--error);
+}
+
+.review-history-delete:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.review-history-delete .material-symbol {
+  font-size: 1.1rem;
 }
 
 .review-history-score {
@@ -1665,7 +1773,7 @@ onBeforeUnmount(() => {
 
 .review-workspace > .review-actions,
 .review-workspace > .review-export-error {
-  grid-column: 2;
+  grid-column: 1;
 }
 
 .review-workspace > .review-actions {
@@ -1730,14 +1838,6 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 
-  .review-history-rail {
-    position: static;
-  }
-
-  .review-history-list {
-    max-height: none;
-  }
-
   .review-workspace > .review-actions,
   .review-workspace > .review-export-error {
     grid-column: 1;
@@ -1758,6 +1858,10 @@ onBeforeUnmount(() => {
 
   .review-history-item {
     grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .review-history-list {
+    grid-auto-columns: minmax(210px, 82vw);
   }
 }
 </style>

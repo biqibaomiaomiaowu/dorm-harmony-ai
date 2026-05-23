@@ -317,9 +317,8 @@ requireIncludes('src/views/ReviewView.vue', [
   '原话 vs 推荐话术',
   '沟通计划',
   'exportReviewMarkdown',
-  'exportReviewImage',
   'practiceAgain',
-  'hasReviewResult',
+  'canShowReviewWorkspace',
   '<Transition name="review-result-transition" mode="out-in">',
   'review-result-stack',
   'review-card-reveal-item',
@@ -446,13 +445,80 @@ requireMatches('src/data/week1.ts', [
   },
 ])
 
+requireMatches('src/data/reviewHistory.ts', [
+  {
+    label: 'review history normalizes legacy original_event event_type aliases',
+    pattern:
+      /mapEventTypeToAnalyzeApi[\s\S]*?function normalizeReviewHistoryEventType[\s\S]*?mapEventTypeToAnalyzeApi/,
+  },
+])
+
 requireIncludes('src/data/reviewHistory.ts', [
   '/api/reviews',
   'fetchReviewHistory',
   'fetchReviewReport',
+  'deleteReviewReport',
   'ReviewReportSummary',
   'ReviewReportDetail',
   'normalizeReviewResponse',
+])
+
+requireMatches('src/views/ReviewView.vue', [
+  {
+    label: 'review page skips current report generation when there is no user dialogue',
+    pattern:
+      /function hasReviewableDialogue[\s\S]*?speaker === 'user'[\s\S]*?if \(!hasReviewableDialogue\(context\.dialogue\)\)/,
+  },
+  {
+    label: 'review page can show history workspace without a current report',
+    pattern:
+      /const canShowReviewWorkspace = computed[\s\S]*?reviewHistory\.value\.length > 0[\s\S]*?v-if="canShowReviewWorkspace"/,
+  },
+  {
+    label: 'review page uses Markdown export instead of PDF export',
+    pattern:
+      /function exportReviewMarkdown\(\)[\s\S]*?new Blob\(\[buildReviewMarkdown\(\)\],[\s\S]*?text\/markdown[\s\S]*?review-report-\$\{reviewFileStamp\(\)\}\.md/,
+  },
+  {
+    label: 'review page restores roommate names from history detail',
+    pattern:
+      /function snapshotFromReportDetail[\s\S]*?roommateNames: detail\.request\.roommate_names/,
+  },
+  {
+    label: 'review history is rendered as a horizontal strip',
+    pattern:
+      /class="review-history-strip[\s\S]*?\.review-workspace\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)[\s\S]*?\.review-history-list\s*\{[\s\S]*?grid-auto-flow:\s*column[\s\S]*?overflow-x:\s*auto/,
+  },
+  {
+    label: 'review history hides the persisted duplicate of the current report',
+    pattern:
+      /const visibleReviewHistory = computed<ReviewReportSummary\[\]>\(\(\) =>[\s\S]*?findCurrentReportDuplicateId[\s\S]*?reviewHistory\.value\.filter\(\(report\) => report\.id !== duplicateId\)[\s\S]*?v-for="report in visibleReviewHistory"/,
+  },
+  {
+    label: 'review page deletes history through API and removes it from local state',
+    pattern:
+      /deleteReviewReport[\s\S]*?const deletingReviewIds = ref<Set<string>>[\s\S]*?const pendingDeleteReviewId = ref<string \| null>\(null\)[\s\S]*?async function deleteHistoryReport[\s\S]*?pendingDeleteReviewId\.value !== report\.id[\s\S]*?await deleteReviewReport\(report\.id\)[\s\S]*?reviewHistory\.value = reviewHistory\.value\.filter/,
+  },
+  {
+    label: 'review page resets pending delete state after failed delete',
+    pattern:
+      /catch \(error\) \{\s*pendingDeleteReviewId\.value = null[\s\S]{0,240}?复盘历史删除失败/,
+  },
+  {
+    label: 'review history deletion animates card removal and moves',
+    pattern:
+      /<TransitionGroup[\s\S]*?name="review-history-card"[\s\S]*?class="review-history-list"[\s\S]*?\.review-history-card-enter-active,[\s\S]*?\.review-history-card-leave-active,[\s\S]*?\.review-history-card-move[\s\S]*?transition:/,
+  },
+])
+requireExcludes('src/views/ReviewView.vue', [
+  'window.confirm',
+  'exportReviewImage',
+  '导出图片',
+  'exportReviewPdf',
+  '导出 PDF',
+  'isExportingPdf',
+  'application/pdf',
+  'buildPdfWithJpeg',
 ])
 
 requireIncludes('src/styles/main.css', [
