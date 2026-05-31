@@ -20,10 +20,10 @@ const featureCards = [
     tone: 'pink',
   },
   {
-    title: '沟通模拟器',
+    title: 'AI 沟通演练',
     icon: 'forum',
-    text: '在安全的沙盒环境中练习对话。模拟不同语气的反馈效果，掌握非暴力沟通技巧。',
-    action: '进入沙盒',
+    text: '从场景训练进入常见宿舍冲突练习，也可以用自定义演练搭建自己的对话沙盒。',
+    action: '进入演练',
     tone: 'purple',
   },
   {
@@ -39,7 +39,7 @@ const featureIntroSlides: FeatureIntroSlide[] = [
   {
     title: '事件记录',
     icon: 'history',
-    text: '先把宿舍事件记录清楚，后续分析、模拟和复盘都会以这些档案为基础。',
+    text: '先把宿舍事件记录清楚，后续分析、演练和复盘都会以这些档案为基础。',
     points: [
       '当前情绪可多选，用来保留当时更完整的感受线索。',
       '主要情绪只选一个，用来标记这次事件最核心的情绪倾向。',
@@ -57,12 +57,14 @@ const featureIntroSlides: FeatureIntroSlide[] = [
     ],
   },
   {
-    title: '沟通模拟器',
+    title: 'AI 沟通演练',
     icon: 'forum',
-    text: '你可以在安全沙盒里先练习表达，再决定现实沟通时怎么开口。',
+    text: '你可以先做场景训练熟悉常见冲突，也可以进入自定义演练，把现实前的表达先说一遍。',
     points: [
+      '场景训练会围绕宿舍常见矛盾提供结构化练习入口。',
+      '自定义演练保留原多角色沟通沙盒，可以自由选择场景和 AI 舍友设定。',
       '自定义 AI 舍友时，直接程度越高回复越直白，情绪反应越高越容易激动，回避倾向越高越可能闪躲，共情程度越高越愿意理解，解决意愿越高越愿意协商，边界敏感度越高越在意私人空间和规则。',
-      '模拟开始后不能编辑或新增 AI 舍友，需要点击重置后再调整。',
+      '自定义演练开始后不能编辑或新增 AI 舍友，需要点击重置后再调整。',
       '接入事件档案可以让 AI 知道事件档案记录了什么，从而围绕真实记录回应。',
       'AI 舍友回复途中可以插话；AI 舍友不是固定只回复一条消息。',
       'AI 舍友互相之间发的消息是互相可见的，会基于当前对话继续回应。',
@@ -72,9 +74,9 @@ const featureIntroSlides: FeatureIntroSlide[] = [
   {
     title: '沟通复盘',
     icon: 'summarize',
-    text: '沟通复盘会根据沟通模拟对话总结表现，帮助你整理下一步表达。',
+    text: '沟通复盘会根据沟通演练对话总结表现，帮助你整理下一步表达。',
     points: [
-      '根据沟通模拟对话总结舍友反馈、表达亮点和容易误解的位置。',
+      '根据沟通演练对话总结舍友反馈、表达亮点和容易误解的位置。',
       '复盘会给出建议，帮助你把现实沟通说得更温和、具体、可执行。',
       '建议仅用于沟通练习，如有现实安全风险，应优先寻求线下支持。',
     ],
@@ -301,13 +303,13 @@ function restoreFocusAfterModalClose() {
   })
 }
 
-function featureActionTarget(action: string): 'record' | 'simulate' | 'analysis' | null {
+function featureActionTarget(action: string): 'record' | 'rehearsal' | 'analysis' | null {
   if (action === '开启分析') {
     return 'record'
   }
 
-  if (action === '进入沙盒') {
-    return 'simulate'
+  if (action === '进入演练') {
+    return 'rehearsal'
   }
 
   if (action === '查看报告') {

@@ -33,9 +33,24 @@ const router = createRouter({
       component: () => import('@/views/EventArchiveView.vue'),
     },
     {
+      path: '/rehearsal',
+      name: 'rehearsal',
+      component: () => import('@/views/RehearsalHomeView.vue'),
+    },
+    {
+      path: '/rehearsal/scenario',
+      name: 'scenario-training',
+      component: () => import('@/views/ScenarioTrainingView.vue'),
+    },
+    {
+      path: '/rehearsal/custom',
+      name: 'custom-rehearsal',
+      component: () => import('@/views/SimulationView.vue'),
+    },
+    {
       path: '/simulate',
       name: 'simulate',
-      component: () => import('@/views/SimulationView.vue'),
+      redirect: (to) => ({ name: 'custom-rehearsal', query: to.query }),
     },
     {
       path: '/review',
