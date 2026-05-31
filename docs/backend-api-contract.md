@@ -1,6 +1,6 @@
 # 后端 API 契约
 
-本文档记录当前后端已实现接口。运行时 AI 接口已接入 FastAPI + LangChain + DeepSeek 服务层，已提供健康检查、压力分析、SQLite 事件档案、沟通模拟、沟通复盘、复盘历史和事件档案 AI 心晴见解接口；第三阶段之后已补充本地 Vite 代理、FastAPI CORS、LangGraph SQLite 会话记忆、真实流式模拟接入和复盘字段兼容。
+本文档记录当前后端已实现接口。运行时 AI 接口已接入 FastAPI + LangChain + DeepSeek 服务层，已提供健康检查、压力分析、SQLite 事件档案、AI 沟通演练、沟通复盘、复盘历史、固定训练目录和事件档案 AI 心晴见解接口；V4 已补充周期档案分析、推荐场景训练和复盘来源元信息。
 
 ## 安全边界
 
@@ -317,13 +317,13 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 - 档案汇总和趋势点都按当前评分模型调用 `analyze_pressure(event)` 重算；`EventRecord.single_analysis` 只作为事件创建时的快照保留。
 - `发生频率较高`、`尚未有效沟通`、`已出现争吵或冷战` 仍会通过单条事件压力分影响贡献值，但不会作为 `source_breakdown` 的独立类别返回。
 
-## AI 与 V3 模拟/复盘接口
+## AI 与 V4 演练/复盘接口
 
 以下内容为当前已实现 AI 接口。`/api/simulate`、`/api/simulate/stream`、`/api/events/insight` 与 `/api/review` 运行时通过 LangChain 调用 DeepSeek 官方 OpenAI 兼容 API，并返回便于前端展示的结构化响应。模拟与复盘可通过 LangGraph SQLite 会话记忆读取同一 `conversation_id` 的历史对话。
 
 ### POST /api/simulate
 
-状态：已实现，V3 已扩展为动态舍友画像、事件档案上下文、LangGraph SQLite 会话记忆和多轮模拟。运行时通过 LangChain 调用 DeepSeek `deepseek-v4-flash`；缺少 `DEEPSEEK_API_KEY` 且没有兼容的 `OPENAI_API_KEY` 时返回 `503`。
+状态：已实现，V4 前端入口为 AI 沟通演练；后端继续复用 `/api/simulate` 契约，支持动态舍友画像、事件档案上下文、LangGraph SQLite 会话记忆和多轮流式演练。运行时通过 LangChain 调用 DeepSeek `deepseek-v4-flash`；缺少 `DEEPSEEK_API_KEY` 且没有兼容的 `OPENAI_API_KEY` 时返回 `503`。
 
 请求字段：
 
@@ -505,7 +505,7 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 
 ### POST /api/review
 
-状态：已实现，V3 已扩展为支持 `conversation_id` 复盘、多条话术改写建议、沟通计划和复盘历史保存。运行时通过 LangChain 调用 DeepSeek `deepseek-v4-flash`；缺少 `DEEPSEEK_API_KEY` 且没有兼容的 `OPENAI_API_KEY` 时返回 `503`。
+状态：已实现，V4 已扩展为支持 `conversation_id` 复盘、多条话术改写建议、沟通计划、复盘历史保存和 `source_meta` 来源元信息。运行时通过 LangChain 调用 DeepSeek `deepseek-v4-flash`；缺少 `DEEPSEEK_API_KEY` 且没有兼容的 `OPENAI_API_KEY` 时返回 `503`。
 
 请求字段：
 
