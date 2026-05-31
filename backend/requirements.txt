@@ -1,5 +1,6 @@
 # Requires Python >=3.11 for enum.StrEnum.
 fastapi>=0.110,<1
+anyio>=4.0,<4.13
 httpx>=0.27,<1
 pydantic>=2.6,<3
 pytest>=8,<9

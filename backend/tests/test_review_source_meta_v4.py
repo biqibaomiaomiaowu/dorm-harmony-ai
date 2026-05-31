@@ -1,12 +1,11 @@
-import asyncio
 import sqlite3
 
-import httpx
 import pytest
 
 from app.main import app, get_ai_service, get_review_history_store
 from app.review_store import SQLiteReviewHistoryStore
 from app.schemas import ReviewRequest, ReviewResponse
+from tests.api_test_client import ApiTestClient
 
 
 REVIEW_PERFORMANCE_SCORES = {"clarity": 82, "empathy": 76, "resolution": 71}
@@ -69,19 +68,8 @@ def make_review_response() -> ReviewResponse:
     )
 
 
-async def _request(method: str, url: str, **kwargs) -> httpx.Response:
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://testserver",
-    ) as client:
-        response = await client.request(method, url, **kwargs)
-        await response.aread()
-        return response
-
-
-def api_request(method: str, url: str, **kwargs) -> httpx.Response:
-    return asyncio.run(_request(method, url, **kwargs))
+def api_request(method: str, url: str, **kwargs):
+    return ApiTestClient(app).request(method, url, **kwargs)
 
 
 @pytest.fixture(autouse=True)

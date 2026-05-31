@@ -2,7 +2,6 @@ import inspect
 import json
 from datetime import date, timedelta
 
-from fastapi.testclient import TestClient
 import pytest
 
 import app.ai_service as ai_service
@@ -34,9 +33,10 @@ from app.schemas import (
     RoommateReply,
     SimulateResponse,
 )
+from tests.api_test_client import ApiTestClient
 
 
-client = TestClient(app)
+client = ApiTestClient(app)
 REVIEW_PERFORMANCE_SCORES = {"clarity": 82, "empathy": 76, "resolution": 71}
 REVIEW_REWRITE_SUGGESTIONS = [
     {
