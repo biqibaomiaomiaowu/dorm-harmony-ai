@@ -53,16 +53,83 @@ export interface SourceBreakdown {
   contribution: number
 }
 
+export interface ArchiveTrendPoint {
+  date: string
+  pressure_score: number
+  event_count: number
+}
+
+export interface EmotionDistributionItem {
+  emotion: ArchiveEmotion
+  label: string
+  count: number
+  percent: number
+}
+
+export interface SourceInsight {
+  rank: number
+  label: string
+  percent: number
+  contribution: number
+  event_count: number
+  recent_event_date: string | null
+  explanation: string
+}
+
+export interface EventInsightSummary {
+  period_days: number
+  period_event_count: number
+  top_emotions: string[]
+  top_event_types: string[]
+  communicated_count: number
+  uncommunicated_count: number
+  conflict_count: number
+  summary: string
+}
+
+export interface TrainingRecommendation {
+  category_id: string
+  category_label: string
+  scenario_id: string
+  scenario_title: string
+  target_id: string
+  target_label: string
+  difficulty_id: string
+  difficulty_label: string
+  difficulty_description: string
+  reason: string
+  opening_suggestion: string
+  safety_note: string
+}
+
 export interface ArchiveAnalysisResponse extends AnalyzeApiResponse {
   event_count: number
   active_30d_count: number
   source_breakdown: SourceBreakdown[]
+  period_days?: number
+  active_period_count?: number
+  trend_points?: ArchiveTrendPoint[]
+  trend_explanation?: string
+  source_insights?: SourceInsight[]
+  main_source_conclusion?: string
+  emotion_distribution?: EmotionDistributionItem[]
+  event_insight?: EventInsightSummary | null
+  training_recommendation?: TrainingRecommendation | null
 }
 
 export interface ArchiveAnalysisResult extends AnalyzeResult {
   event_count: number
   active_30d_count: number
   source_breakdown: SourceBreakdown[]
+  period_days: number
+  active_period_count: number
+  trend_points: ArchiveTrendPoint[]
+  trend_explanation: string
+  source_insights: SourceInsight[]
+  main_source_conclusion: string
+  emotion_distribution: EmotionDistributionItem[]
+  event_insight: EventInsightSummary | null
+  training_recommendation: TrainingRecommendation | null
 }
 
 export interface ArchiveInsightResponse {
@@ -195,6 +262,15 @@ export function normalizeArchiveAnalysisResponse(
     event_count: payload.event_count,
     active_30d_count: payload.active_30d_count,
     source_breakdown: payload.source_breakdown,
+    period_days: payload.period_days ?? 30,
+    active_period_count: payload.active_period_count ?? payload.active_30d_count,
+    trend_points: payload.trend_points ?? [],
+    trend_explanation: payload.trend_explanation ?? '',
+    source_insights: payload.source_insights ?? [],
+    main_source_conclusion: payload.main_source_conclusion ?? '',
+    emotion_distribution: payload.emotion_distribution ?? [],
+    event_insight: payload.event_insight ?? null,
+    training_recommendation: payload.training_recommendation ?? null,
   }
 }
 
@@ -236,6 +312,116 @@ function isSourceBreakdown(value: unknown): value is SourceBreakdown {
   )
 }
 
+function isArchiveTrendPoint(value: unknown): value is ArchiveTrendPoint {
+  return (
+    isRecord(value) &&
+    typeof value.date === 'string' &&
+    typeof value.pressure_score === 'number' &&
+    Number.isFinite(value.pressure_score) &&
+    typeof value.event_count === 'number' &&
+    Number.isFinite(value.event_count)
+  )
+}
+
+function isArchiveEmotion(value: unknown): value is ArchiveEmotion {
+  return (
+    value === 'irritable' ||
+    value === 'anxious' ||
+    value === 'wronged' ||
+    value === 'angry' ||
+    value === 'helpless' ||
+    value === 'depressed'
+  )
+}
+
+function isEmotionDistributionItem(value: unknown): value is EmotionDistributionItem {
+  return (
+    isRecord(value) &&
+    isArchiveEmotion(value.emotion) &&
+    typeof value.label === 'string' &&
+    typeof value.count === 'number' &&
+    Number.isFinite(value.count) &&
+    typeof value.percent === 'number' &&
+    Number.isFinite(value.percent)
+  )
+}
+
+function isSourceInsight(value: unknown): value is SourceInsight {
+  return (
+    isRecord(value) &&
+    typeof value.rank === 'number' &&
+    Number.isFinite(value.rank) &&
+    typeof value.label === 'string' &&
+    typeof value.percent === 'number' &&
+    Number.isFinite(value.percent) &&
+    typeof value.contribution === 'number' &&
+    Number.isFinite(value.contribution) &&
+    typeof value.event_count === 'number' &&
+    Number.isFinite(value.event_count) &&
+    (value.recent_event_date === null || typeof value.recent_event_date === 'string') &&
+    typeof value.explanation === 'string'
+  )
+}
+
+function isEventInsightSummary(value: unknown): value is EventInsightSummary {
+  return (
+    isRecord(value) &&
+    typeof value.period_days === 'number' &&
+    Number.isFinite(value.period_days) &&
+    typeof value.period_event_count === 'number' &&
+    Number.isFinite(value.period_event_count) &&
+    isStringArray(value.top_emotions) &&
+    isStringArray(value.top_event_types) &&
+    typeof value.communicated_count === 'number' &&
+    Number.isFinite(value.communicated_count) &&
+    typeof value.uncommunicated_count === 'number' &&
+    Number.isFinite(value.uncommunicated_count) &&
+    typeof value.conflict_count === 'number' &&
+    Number.isFinite(value.conflict_count) &&
+    typeof value.summary === 'string'
+  )
+}
+
+function isTrainingRecommendation(value: unknown): value is TrainingRecommendation {
+  return (
+    isRecord(value) &&
+    typeof value.category_id === 'string' &&
+    typeof value.category_label === 'string' &&
+    typeof value.scenario_id === 'string' &&
+    typeof value.scenario_title === 'string' &&
+    typeof value.target_id === 'string' &&
+    typeof value.target_label === 'string' &&
+    typeof value.difficulty_id === 'string' &&
+    typeof value.difficulty_label === 'string' &&
+    typeof value.difficulty_description === 'string' &&
+    typeof value.reason === 'string' &&
+    typeof value.opening_suggestion === 'string' &&
+    typeof value.safety_note === 'string'
+  )
+}
+
+function isOptionalFiniteNumber(value: unknown): boolean {
+  return typeof value === 'undefined' || (typeof value === 'number' && Number.isFinite(value))
+}
+
+function isOptionalString(value: unknown): boolean {
+  return typeof value === 'undefined' || typeof value === 'string'
+}
+
+function isOptionalArray<T>(
+  value: unknown,
+  guard: (item: unknown) => item is T,
+): boolean {
+  return typeof value === 'undefined' || (Array.isArray(value) && value.every(guard))
+}
+
+function isOptionalNullable<T>(
+  value: unknown,
+  guard: (item: unknown) => item is T,
+): boolean {
+  return typeof value === 'undefined' || value === null || guard(value)
+}
+
 function isEventRecord(value: unknown): value is EventRecord {
   return (
     isRecord(value) &&
@@ -272,7 +458,16 @@ function isArchiveAnalysisResponse(value: unknown): value is ArchiveAnalysisResp
     typeof candidate.active_30d_count === 'number' &&
     Number.isFinite(candidate.active_30d_count) &&
     Array.isArray(candidate.source_breakdown) &&
-    candidate.source_breakdown.every(isSourceBreakdown)
+    candidate.source_breakdown.every(isSourceBreakdown) &&
+    isOptionalFiniteNumber(candidate.period_days) &&
+    isOptionalFiniteNumber(candidate.active_period_count) &&
+    isOptionalArray(candidate.trend_points, isArchiveTrendPoint) &&
+    isOptionalString(candidate.trend_explanation) &&
+    isOptionalArray(candidate.source_insights, isSourceInsight) &&
+    isOptionalString(candidate.main_source_conclusion) &&
+    isOptionalArray(candidate.emotion_distribution, isEmotionDistributionItem) &&
+    isOptionalNullable(candidate.event_insight, isEventInsightSummary) &&
+    isOptionalNullable(candidate.training_recommendation, isTrainingRecommendation)
   )
 }
 
@@ -349,8 +544,8 @@ export async function deleteEventRecord(id: string): Promise<void> {
   await assertOk(response, '事件删除失败')
 }
 
-export async function fetchArchiveAnalysis(): Promise<ArchiveAnalysisResponse> {
-  const response = await fetch('/api/events/analysis')
+export async function fetchArchiveAnalysis(rangeDays = 30): Promise<ArchiveAnalysisResponse> {
+  const response = await fetch(`/api/events/analysis?range_days=${rangeDays}`)
 
   await assertOk(response, '总压力分析加载失败')
   const raw = (await response.json()) as unknown

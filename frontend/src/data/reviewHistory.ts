@@ -3,6 +3,7 @@ import {
   isReviewResponsePayload,
   mapEventTypeToAnalyzeApi,
   normalizeReviewResponse,
+  type RehearsalSourceMeta,
   type ReviewDialogueLine,
   type ReviewRequest,
   type ReviewResponse,
@@ -19,6 +20,7 @@ export interface ReviewReportSummary {
   score_clarity: number
   score_empathy: number
   score_resolution: number
+  source_meta?: RehearsalSourceMeta | null
 }
 
 export interface ReviewReportDetail extends ReviewReportSummary {
@@ -138,6 +140,77 @@ function assertRoommateNames(
   )
 }
 
+function assertRehearsalSourceMetaField(value: unknown, field: string): RehearsalSourceMeta {
+  if (!isRecord(value)) {
+    throw new Error(`复盘历史字段异常：${field}`)
+  }
+
+  const mode = assertString(value.mode, `${field}.mode`)
+  if (mode === 'scenario_training') {
+    const sourceMeta: RehearsalSourceMeta = {
+      mode,
+      category_id: assertString(value.category_id, `${field}.category_id`),
+      category_label: assertString(value.category_label, `${field}.category_label`),
+      scenario_id: assertString(value.scenario_id, `${field}.scenario_id`),
+      scenario_title: assertString(
+        value.scenario_title ?? value.scenario_label,
+        `${field}.scenario_title`,
+      ),
+      target_id: assertString(value.target_id, `${field}.target_id`),
+      target_label: assertString(value.target_label, `${field}.target_label`),
+      difficulty_id: assertString(value.difficulty_id, `${field}.difficulty_id`),
+      difficulty_label: assertString(value.difficulty_label, `${field}.difficulty_label`),
+    }
+
+    const difficultyDescription = assertOptionalString(
+      value.difficulty_description,
+      `${field}.difficulty_description`,
+    )
+    if (difficultyDescription) {
+      sourceMeta.difficulty_description = difficultyDescription
+    }
+
+    return sourceMeta
+  }
+
+  if (mode === 'custom_rehearsal') {
+    const sourceMeta: RehearsalSourceMeta = {
+      mode,
+      scenario: assertString(value.scenario, `${field}.scenario`),
+    }
+    const roommateSummary = assertOptionalString(
+      value.roommate_summary,
+      `${field}.roommate_summary`,
+    )
+    if (roommateSummary) {
+      sourceMeta.roommate_summary = roommateSummary
+    }
+
+    return sourceMeta
+  }
+
+  throw new Error(`复盘历史字段异常：${field}.mode`)
+}
+
+export function assertRehearsalSourceMeta(value: unknown): RehearsalSourceMeta {
+  return assertRehearsalSourceMetaField(value, 'source_meta')
+}
+
+function assertOptionalRehearsalSourceMeta(
+  value: unknown,
+  field: string,
+): RehearsalSourceMeta | null {
+  if (typeof value === 'undefined' || value === null) {
+    return null
+  }
+
+  try {
+    return assertRehearsalSourceMetaField(value, field)
+  } catch {
+    return null
+  }
+}
+
 function assertReviewRequest(value: unknown): ReviewRequest {
   if (!isRecord(value)) {
     throw new Error('复盘历史字段异常：request')
@@ -206,6 +279,11 @@ function assertReviewRequest(value: unknown): ReviewRequest {
     request.original_event = originalEvent
   }
 
+  const sourceMeta = assertOptionalRehearsalSourceMeta(value.source_meta, 'request.source_meta')
+  if (sourceMeta) {
+    request.source_meta = sourceMeta
+  }
+
   return request
 }
 
@@ -227,6 +305,7 @@ function assertReviewReportSummary(value: unknown): ReviewReportSummary {
   }
 
   const conversationId = assertOptionalString(value.conversation_id, 'report.conversation_id')
+  const sourceMeta = assertOptionalRehearsalSourceMeta(value.source_meta, 'report.source_meta')
 
   return {
     id: assertString(value.id, 'report.id'),
@@ -237,6 +316,7 @@ function assertReviewReportSummary(value: unknown): ReviewReportSummary {
     score_clarity: assertScore(value.score_clarity, 'report.score_clarity'),
     score_empathy: assertScore(value.score_empathy, 'report.score_empathy'),
     score_resolution: assertScore(value.score_resolution, 'report.score_resolution'),
+    source_meta: sourceMeta,
   }
 }
 
@@ -245,9 +325,13 @@ function assertReviewReportDetail(value: unknown): ReviewReportDetail {
     throw new Error('复盘历史字段异常：detail')
   }
 
+  const summary = assertReviewReportSummary(value)
+  const request = assertReviewRequest(value.request)
+
   return {
-    ...assertReviewReportSummary(value),
-    request: assertReviewRequest(value.request),
+    ...summary,
+    source_meta: summary.source_meta ?? request.source_meta ?? null,
+    request,
     response: assertReviewResponse(value.response),
     dialogue: assertReviewDialogue(value.dialogue, 'detail.dialogue'),
   }

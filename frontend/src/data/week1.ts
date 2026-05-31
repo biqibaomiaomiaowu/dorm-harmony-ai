@@ -12,6 +12,29 @@ export interface AnalyzeRequest {
 
 export type AnalyzeRiskLevel = 'stable' | 'pressure' | 'high' | 'severe'
 
+export type RehearsalMode = 'scenario_training' | 'custom_rehearsal'
+
+export interface ScenarioTrainingSourceMeta {
+  mode: 'scenario_training'
+  category_id: string
+  category_label: string
+  scenario_id: string
+  scenario_title: string
+  target_id: string
+  target_label: string
+  difficulty_id: string
+  difficulty_label: string
+  difficulty_description?: string
+}
+
+export interface CustomRehearsalSourceMeta {
+  mode: 'custom_rehearsal'
+  scenario: string
+  roommate_summary?: string
+}
+
+export type RehearsalSourceMeta = ScenarioTrainingSourceMeta | CustomRehearsalSourceMeta
+
 export interface AnalyzeApiResponse {
   pressure_score: number
   risk_level: AnalyzeRiskLevel
@@ -158,6 +181,7 @@ export interface StoredSimulationResult {
   request: SimulationRequest
   response: SimulationResponse
   dialogue?: ReviewDialogueLine[]
+  source_meta?: RehearsalSourceMeta
 }
 
 export interface ReviewOriginalEvent {
@@ -214,11 +238,13 @@ export interface ReviewRequest {
   dialogue?: ReviewDialogueLine[]
   roommate_names?: Partial<Record<ReviewDialogueSpeaker, string>>
   original_event?: ReviewOriginalEvent
+  source_meta?: RehearsalSourceMeta
 }
 
 export interface StoredReviewResult {
   request: ReviewRequest
   response: ReviewResponse
+  source_meta?: RehearsalSourceMeta
 }
 
 type LegacyEventType =

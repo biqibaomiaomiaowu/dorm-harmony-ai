@@ -46,6 +46,15 @@ const EMPTY_ARCHIVE_RESULT: ArchiveAnalysisResult = {
   event_count: 0,
   active_30d_count: 0,
   source_breakdown: [],
+  period_days: 30,
+  active_period_count: 0,
+  trend_points: [],
+  trend_explanation: '',
+  source_insights: [],
+  main_source_conclusion: '',
+  emotion_distribution: [],
+  event_insight: null,
+  training_recommendation: null,
 }
 
 const result = ref<ArchiveAnalysisResult>(EMPTY_ARCHIVE_RESULT)
