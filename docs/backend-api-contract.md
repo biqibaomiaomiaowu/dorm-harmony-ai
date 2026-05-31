@@ -517,6 +517,29 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 | `dialogue[].speaker` | string | 发言者，枚举为 `user` / `system` / 任意 `roommate_*` id；兼容前端中文展示名 |
 | `dialogue[].message` | string | 单条对话内容，最长 500 字符 |
 | `original_event` | object | 可选，受控原始事件摘要；只允许 `event_type`、`severity`、`frequency`、`emotion`、`emotions`、`primary_emotion`、`has_communicated`、`has_conflict`、`pressure_score`、`risk_level`、`risk_label`、`description`，禁止提交任意大 JSON 或未授权字段 |
+| `source_meta` | object \| null | 可选，V4 复盘来源元信息；使用 `mode` 判别 `scenario_training` 或 `custom_rehearsal`，旧请求不带该字段仍兼容 |
+
+`source_meta.mode="scenario_training"` 字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `mode` | string | 固定为 `scenario_training` |
+| `category_id` | string | 训练目录分类 id |
+| `category_label` | string | 训练目录分类展示名 |
+| `scenario_id` | string | 训练场景 id |
+| `scenario_title` | string | 训练场景标题 |
+| `target_id` | string | 训练目标 id |
+| `target_label` | string | 训练目标展示名 |
+| `difficulty_id` | string | 难度 id |
+| `difficulty_label` | string | 难度展示名 |
+
+`source_meta.mode="custom_rehearsal"` 字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `mode` | string | 固定为 `custom_rehearsal` |
+| `scenario` | string | 用户自定义演练场景 |
+| `roommate_summary` | string \| null | 可选，用户填写的舍友特征或背景摘要 |
 
 第三阶段兼容说明：
 
@@ -524,7 +547,7 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 - 为兼容当前前端复盘页展示文本，后端会在校验前把 `你`、`用户`、`我` 归一化为 `user`，把 `舍友 A` / `舍友A` / `舍友 A（直接型）` 等归一化为 `roommate_a`，`舍友 B` 系列归一化为 `roommate_b`，`舍友 C` 系列归一化为 `roommate_c`，`系统` 归一化为 `system`。
 - `original_event.event_type` 标准值仍为 `noise`、`schedule`、`hygiene`、`cost`、`privacy`、`emotion`。后端兼容 `noise_conflict`、`schedule_conflict`、`hygiene_conflict`、`expense_conflict`、`privacy_boundary`、`emotional_conflict` 等旧前端值。
 - 分析页派生的 `risk-stable`、`risk-pressure`、`risk-high`、`risk-severe` 不作为真实事件类型传给 AI，会归一化为 `None`；未知 `risk-*` 值仍返回 `422`。
-- `ReviewRequest`、`dialogue[]` 和 `original_event` 均拒绝未授权 extra 字段。
+- `ReviewRequest`、`dialogue[]`、`original_event` 和 `source_meta` 均拒绝未授权 extra 字段。
 
 响应字段：
 
@@ -559,6 +582,17 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 {
   "scenario": "舍友晚上打游戏声音较大，影响睡眠",
   "conversation_id": "conversation-1",
+  "source_meta": {
+    "mode": "scenario_training",
+    "category_id": "noise",
+    "category_label": "噪音冲突",
+    "scenario_id": "noise_game_night",
+    "scenario_title": "晚上打游戏声音太大",
+    "target_id": "make_request",
+    "target_label": "提出请求",
+    "difficulty_id": "intermediate",
+    "difficulty_label": "中级"
+  },
   "dialogue": [
     {
       "speaker": "user",
@@ -629,6 +663,8 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 
 真实 `/api/review` 成功且 `is_demo=false` 时，后端会将报告写入 SQLite 复盘历史。若历史写入失败，接口仍返回本次复盘结果，并在后端日志记录持久化错误。
 
+复盘历史复用请求快照保存 `source_meta`，不要求旧历史或旧请求补齐该字段；缺失或无法解析时，历史列表和详情中的 `source_meta` 返回 `null`。
+
 ### GET /api/reviews
 
 状态：已实现。返回最近复盘报告摘要，默认最多 20 条，`limit` 最大按 50 截断。
@@ -648,6 +684,7 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 | `reports[].created_at` | string | 创建时间，ISO datetime |
 | `reports[].conversation_id` | string \| null | 关联模拟会话 id |
 | `reports[].scenario` | string | 沟通场景 |
+| `reports[].source_meta` | object \| null | 当次复盘来源元信息；结构同 `/api/review` 请求的 `source_meta`，旧历史缺失时为 `null` |
 | `reports[].summary` | string | 复盘摘要 |
 | `reports[].score_clarity` | number | 表达清晰度评分 |
 | `reports[].score_empathy` | number | 共情能力评分 |
@@ -663,6 +700,17 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
       "created_at": "2026-05-22T08:00:00Z",
       "conversation_id": "conversation-1",
       "scenario": "舍友晚上打游戏声音较大，影响睡眠",
+      "source_meta": {
+        "mode": "scenario_training",
+        "category_id": "noise",
+        "category_label": "噪音冲突",
+        "scenario_id": "noise_game_night",
+        "scenario_title": "晚上打游戏声音太大",
+        "target_id": "make_request",
+        "target_label": "提出请求",
+        "difficulty_id": "intermediate",
+        "difficulty_label": "中级"
+      },
       "summary": "用户表达较温和，但需要更明确提出时间边界。",
       "score_clarity": 82,
       "score_empathy": 76,
@@ -683,6 +731,8 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 | `request` | object | 当次 `/api/review` 请求快照 |
 | `response` | object | 当次 `/api/review` 响应快照 |
 | `dialogue` | object[] | 保存复盘时使用的对话快照，最多 50 条 |
+
+详情顶层 `source_meta` 与 `request.source_meta` 保持一致；旧请求或旧历史缺失来源元信息时两处均为 `null`。
 
 错误语义：
 

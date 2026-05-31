@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -818,6 +818,41 @@ class ReviewOriginalEvent(BaseModel):
         return text or None
 
 
+RehearsalMode = Literal["scenario_training", "custom_rehearsal"]
+
+
+class ScenarioTrainingReviewMeta(BaseModel):
+    """复盘来源为固定场景训练时的目录元信息。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["scenario_training"]
+    category_id: str
+    category_label: str
+    scenario_id: str
+    scenario_title: str
+    target_id: str
+    target_label: str
+    difficulty_id: str
+    difficulty_label: str
+
+
+class CustomRehearsalReviewMeta(BaseModel):
+    """复盘来源为用户自定义演练时的元信息。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["custom_rehearsal"]
+    scenario: str
+    roommate_summary: str | None = None
+
+
+ReviewSourceMeta = Annotated[
+    ScenarioTrainingReviewMeta | CustomRehearsalReviewMeta,
+    Field(discriminator="mode"),
+]
+
+
 class ReviewRequest(BaseModel):
     """AI 沟通复盘接口的请求体。"""
 
@@ -828,6 +863,7 @@ class ReviewRequest(BaseModel):
     dialogue: list[DialogueMessage] = Field(default_factory=list, max_length=50)
     roommate_names: dict[DialogueSpeaker, str] = Field(default_factory=dict, max_length=20)
     original_event: ReviewOriginalEvent | None = None
+    source_meta: ReviewSourceMeta | None = None
 
     @field_validator("conversation_id", mode="before")
     @classmethod
@@ -1015,6 +1051,7 @@ class ReviewReportSummary(BaseModel):
     created_at: datetime
     conversation_id: str | None = None
     scenario: str
+    source_meta: ReviewSourceMeta | None = None
     summary: str
     score_clarity: int = Field(ge=0, le=100)
     score_empathy: int = Field(ge=0, le=100)

@@ -11,6 +11,8 @@ from threading import Lock
 from typing import Iterator
 from uuid import uuid4
 
+from pydantic import TypeAdapter, ValidationError
+
 from app.event_store import get_default_sqlite_path
 from app.schemas import (
     DialogueMessage,
@@ -18,11 +20,13 @@ from app.schemas import (
     ReviewReportSummary,
     ReviewRequest,
     ReviewResponse,
+    ReviewSourceMeta,
 )
 
 
 _PATH_LOCKS_GUARD = Lock()
 _PATH_LOCKS: dict[Path, Lock] = {}
+_SOURCE_META_ADAPTER = TypeAdapter(ReviewSourceMeta)
 
 
 def _get_path_lock(path: Path) -> Lock:
@@ -109,6 +113,7 @@ class SQLiteReviewHistoryStore:
             created_at=created_at,
             conversation_id=request.conversation_id,
             scenario=request.scenario,
+            source_meta=request.source_meta,
             summary=response.summary,
             score_clarity=response.performance_scores.clarity,
             score_empathy=response.performance_scores.empathy,
@@ -132,7 +137,8 @@ class SQLiteReviewHistoryStore:
                     summary,
                     score_clarity,
                     score_empathy,
-                    score_resolution
+                    score_resolution,
+                    request_json
                 FROM review_reports
                 ORDER BY created_at DESC, rowid DESC
                 LIMIT ?
@@ -244,6 +250,7 @@ class SQLiteReviewHistoryStore:
             created_at=datetime.fromisoformat(row["created_at"]),
             conversation_id=row["conversation_id"],
             scenario=row["scenario"],
+            source_meta=_parse_source_meta(row["request_json"]),
             summary=row["summary"],
             score_clarity=row["score_clarity"],
             score_empathy=row["score_empathy"],
@@ -252,12 +259,49 @@ class SQLiteReviewHistoryStore:
 
     def _row_to_detail(self, row: sqlite3.Row) -> ReviewReportDetail:
         """把 SQLite 行转换为复盘详情 schema。"""
+        request = _parse_review_request(row["request_json"])
+        summary_data = self._row_to_summary(row).model_dump()
+        summary_data["source_meta"] = request.source_meta
         return ReviewReportDetail(
-            **self._row_to_summary(row).model_dump(),
-            request=ReviewRequest.model_validate(json.loads(row["request_json"])),
+            **summary_data,
+            request=request,
             response=ReviewResponse.model_validate(json.loads(row["response_json"])),
             dialogue=[
                 DialogueMessage.model_validate(message)
                 for message in json.loads(row["dialogue_json"])
             ],
         )
+
+
+def _parse_source_meta(request_json: str) -> ReviewSourceMeta | None:
+    """从历史请求快照中容错提取复盘来源元信息。"""
+    try:
+        request_payload = json.loads(request_json)
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+    if not isinstance(request_payload, dict):
+        return None
+
+    source_meta = request_payload.get("source_meta")
+    if source_meta is None:
+        return None
+
+    try:
+        return _SOURCE_META_ADAPTER.validate_python(source_meta)
+    except (TypeError, ValueError, ValidationError):
+        return None
+
+
+def _parse_review_request(request_json: str) -> ReviewRequest:
+    """解析历史复盘请求；仅对坏的 source_meta 做兼容降级。"""
+    request_payload = json.loads(request_json)
+    try:
+        return ReviewRequest.model_validate(request_payload)
+    except ValidationError:
+        if not isinstance(request_payload, dict) or "source_meta" not in request_payload:
+            raise
+
+        sanitized_payload = dict(request_payload)
+        sanitized_payload.pop("source_meta", None)
+        return ReviewRequest.model_validate(sanitized_payload)
