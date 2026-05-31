@@ -955,6 +955,14 @@ watch([scenarioId, targetId, difficultyId], animatePreviewUpdate)
             <h3>训练难度</h3>
             <div class="scenario-chip-list">
               <button
+                type="button"
+                class="scenario-filter-chip"
+                :class="{ active: difficultyFilter === 'all' }"
+                @click="difficultyFilter = 'all'"
+              >
+                全部
+              </button>
+              <button
                 v-for="difficulty in trainingDifficulties"
                 :key="difficulty.id"
                 type="button"
