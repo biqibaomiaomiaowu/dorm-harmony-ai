@@ -98,6 +98,10 @@ const archiveLoadError = ref('')
 const useEventArchive = ref(false)
 const scenarioButtons = computed(() => [...simulationScenarios, ...customScenarios.value])
 
+function buildRoommateSummary(profiles: RoommateProfile[]) {
+  return profiles.map((roommate) => `${roommate.name} / ${roommate.personality_tag}`).join('，')
+}
+
 const {
   userMessage,
   isSubmitting,
@@ -124,6 +128,11 @@ const {
   getRiskLevel: () => savedAnalysisRiskLevel.value,
   getContext: () => buildRequestContext(),
   getUseEventArchive: () => useEventArchive.value && archiveEventCount.value > 0,
+  getSourceMeta: () => ({
+    mode: 'custom_rehearsal',
+    scenario: currentScene.value,
+    roommate_summary: buildRoommateSummary(roommates.value),
+  }),
 })
 
 function isRecord(value: unknown): value is RecordLike {
@@ -712,10 +721,10 @@ function deleteCustomScenario(scene: string) {
 
     <section class="simulation-header-card card-border pop-card pop-shadow">
       <div class="simulation-title-block">
-        <h1>夜间噪音冲突</h1>
-        <div class="simulation-subtitle-chip card-border">场景演练</div>
+        <h1>自定义演练</h1>
+        <div class="simulation-subtitle-chip card-border">自定义演练</div>
       </div>
-      <p>AI 沟通模拟演练，先选场景，再在下方输入你的沟通话术。</p>
+      <p>AI 沟通演练，先选或保存自定义场景，再在下方输入你的沟通话术。</p>
     </section>
 
     <section class="simulation-scene-card card-border pop-card pop-shadow">
@@ -842,7 +851,7 @@ function deleteCustomScenario(scene: string) {
         <header class="chat-header card-border">
           <div class="chat-title chat-title-row">
             <span class="material-symbol" aria-hidden="true">chat</span>
-            <h2>对话模拟器</h2>
+            <h2>演练对话区</h2>
             <button
               class="archive-switch"
               :class="{ 'archive-switch-on': useEventArchive }"
@@ -1126,7 +1135,7 @@ function deleteCustomScenario(scene: string) {
         >
           <h2 id="roommate-locked-modal-title">功能限制提示</h2>
           <p class="roommate-locked-copy">
-            对话模拟时不能使用舍友编辑和添加功能，请点击重置按钮后再编辑。
+            演练对话进行中不能使用舍友编辑和添加功能，请点击重置按钮后再编辑。
           </p>
           <div class="modal-actions">
             <button
