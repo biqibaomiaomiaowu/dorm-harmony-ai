@@ -90,6 +90,10 @@ REVIEW_SYSTEM_PROMPT = (
     "不能选择虚拟舍友或系统消息，也不能编造 dialogue 中不存在的原话。"
     "dialogue 中的 roommate_* 只是内部 speaker id；如果需要在自然语言中称呼舍友，"
     "必须使用请求提供的 roommate_names 中的姓名，不得输出 roommate_*、custom 后缀或 aa 这类内部标识。"
+    "如果 human prompt 提供 source_meta，它仅用于理解复盘来源和训练目标，"
+    "其中场景训练可参考训练场景、训练目标和训练难度，自定义演练可参考自定义场景和舍友概述。"
+    "source_meta 不代表真实舍友想法，不进行心理诊断、不进行医学判断、不进行人格评价，"
+    "也不要把 source_meta 作为输出字段。"
     "performance_scores 是表现总结评分，必须包含 clarity、empathy、resolution 三个字段，"
     "分别表示表达清晰度、共情能力、问题解决度，值必须是 0-100 的整数。"
     "communication_plan 必须包含 opening、specific_request、fallback_plan 三段："
@@ -199,6 +203,18 @@ def _serialize_indexed_dialogue(dialogue: list[DialogueMessage]) -> str:
     )
 
 
+def _serialize_review_source_meta(request: ReviewRequest) -> str:
+    """把复盘来源元信息序列化为 prompt 中稳定的 JSON。"""
+    if request.source_meta is None:
+        return "未提供"
+
+    return json.dumps(
+        request.source_meta.model_dump(exclude_none=True, mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
 def build_speaker_plan_messages(
     request: SimulateRequest,
     history: list[DialogueMessage],
@@ -300,13 +316,15 @@ def build_review_messages(
         if request.roommate_names
         else "未提供"
     )
+    source_meta = _serialize_review_source_meta(request)
     human_prompt = (
         "请基于以下宿舍沟通对话做结构化复盘。\n"
         "dialogue 每行开头的方括号数字就是原始 0 基 message_index。\n"
         f"scenario: {request.scenario}\n"
         f"roommate_names: {roommate_names}\n"
         f"dialogue:\n{_serialize_indexed_dialogue(review_dialogue)}\n"
-        f"original_event: {original_event}"
+        f"original_event: {original_event}\n"
+        f"source_meta: {source_meta}"
     )
 
     return [SystemMessage(content=REVIEW_SYSTEM_PROMPT), HumanMessage(content=human_prompt)]

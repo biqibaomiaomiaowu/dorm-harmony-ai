@@ -532,6 +532,7 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 | `target_label` | string | 训练目标展示名 |
 | `difficulty_id` | string | 难度 id |
 | `difficulty_label` | string | 难度展示名 |
+| `difficulty_description` | string \| null | 可选，训练难度说明；旧请求可省略 |
 
 `source_meta.mode="custom_rehearsal"` 字段：
 
@@ -591,7 +592,8 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
     "target_id": "make_request",
     "target_label": "提出请求",
     "difficulty_id": "intermediate",
-    "difficulty_label": "中级"
+    "difficulty_label": "中级",
+    "difficulty_description": "在对方轻微反驳时继续保持温和、具体的请求。"
   },
   "dialogue": [
     {
@@ -709,7 +711,8 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
         "target_id": "make_request",
         "target_label": "提出请求",
         "difficulty_id": "intermediate",
-        "difficulty_label": "中级"
+        "difficulty_label": "中级",
+        "difficulty_description": "在对方轻微反驳时继续保持温和、具体的请求。"
       },
       "summary": "用户表达较温和，但需要更明确提出时间边界。",
       "score_clarity": 82,

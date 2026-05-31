@@ -29,6 +29,7 @@ SCENARIO_TRAINING_SOURCE_META = {
     "target_label": "提出请求",
     "difficulty_id": "intermediate",
     "difficulty_label": "中级",
+    "difficulty_description": "在对方轻微反驳时继续保持温和、具体的请求。",
 }
 CUSTOM_REHEARSAL_SOURCE_META = {
     "mode": "custom_rehearsal",
@@ -115,6 +116,35 @@ def test_review_endpoint_accepts_scenario_training_source_meta():
         service.review_request.source_meta.scenario_id
         == SCENARIO_TRAINING_SOURCE_META["scenario_id"]
     )
+
+
+def test_review_endpoint_accepts_legacy_scenario_training_source_meta_without_difficulty_description():
+    service = CapturingReviewService()
+    app.dependency_overrides[get_ai_service] = lambda: service
+    legacy_source_meta = {
+        key: value
+        for key, value in SCENARIO_TRAINING_SOURCE_META.items()
+        if key != "difficulty_description"
+    }
+
+    response = api_request(
+        "POST",
+        "/api/review",
+        json={
+            "conversation_id": "conversation-legacy-scenario-training",
+            "scenario": "舍友晚上打游戏声音很大，影响睡眠。",
+            "source_meta": legacy_source_meta,
+            "dialogue": [
+                {"speaker": "user", "message": "能不能晚上小声一点？"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert service.review_request is not None
+    assert service.review_request.source_meta is not None
+    assert service.review_request.source_meta.mode == "scenario_training"
+    assert service.review_request.source_meta.difficulty_description is None
 
 
 def test_review_endpoint_accepts_custom_rehearsal_source_meta():

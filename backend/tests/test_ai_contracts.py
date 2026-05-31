@@ -639,6 +639,77 @@ def test_build_review_messages_serializes_controlled_original_event():
     assert '"pressure_score": 76' in message_content
 
 
+def test_build_review_messages_marks_missing_source_meta():
+    request = ReviewRequest(
+        scenario="噪音冲突",
+        dialogue=[DialogueMessage(speaker="user", message="晚上能不能小声一点？")],
+    )
+
+    messages = build_review_messages(request)
+
+    assert "source_meta: 未提供" in str(messages[-1].content)
+
+
+def test_build_review_messages_includes_scenario_training_source_meta():
+    request = ReviewRequest(
+        scenario="舍友晚上打游戏声音很大，影响睡眠。",
+        dialogue=[DialogueMessage(speaker="user", message="能不能晚上小声一点？")],
+        source_meta={
+            "mode": "scenario_training",
+            "category_id": "noise",
+            "category_label": "噪音冲突",
+            "scenario_id": "noise_game_night",
+            "scenario_title": "训练场景：晚上打游戏声音太大",
+            "target_id": "make_request",
+            "target_label": "训练目标：提出具体请求",
+            "difficulty_id": "intermediate",
+            "difficulty_label": "训练难度：中级",
+            "difficulty_description": "在对方轻微反驳时继续保持温和、具体的请求。",
+        },
+    )
+
+    messages = build_review_messages(request)
+
+    message_content = str(messages[-1].content)
+    assert "source_meta:" in message_content
+    assert "scenario_training" in message_content
+    assert "训练场景" in message_content
+    assert "训练目标" in message_content
+    assert "训练难度" in message_content
+    assert "difficulty_description" in message_content
+    assert "在对方轻微反驳时继续保持温和、具体的请求" in message_content
+
+
+def test_review_system_prompt_bounds_source_meta_usage():
+    assert "source_meta" in REVIEW_SYSTEM_PROMPT
+    assert "仅用于理解复盘来源和训练目标" in REVIEW_SYSTEM_PROMPT
+    assert (
+        "source_meta 不代表真实舍友想法，不进行心理诊断、不进行医学判断、不进行人格评价"
+        in REVIEW_SYSTEM_PROMPT
+    )
+
+
+def test_build_review_messages_includes_custom_rehearsal_source_meta():
+    request = ReviewRequest(
+        scenario="我想练习如何和舍友沟通临时带朋友来宿舍的问题。",
+        dialogue=[DialogueMessage(speaker="user", message="下次带朋友来之前能不能先说一声？")],
+        source_meta={
+            "mode": "custom_rehearsal",
+            "scenario": "自定义场景：临时带朋友来宿舍前先沟通。",
+            "roommate_summary": "roommate_summary：舍友平时比较直接，容易觉得我小题大做。",
+        },
+    )
+
+    messages = build_review_messages(request)
+
+    message_content = str(messages[-1].content)
+    assert "source_meta:" in message_content
+    assert "custom_rehearsal" in message_content
+    assert "自定义场景" in message_content
+    assert "roommate_summary" in message_content
+    assert "舍友平时比较直接" in message_content
+
+
 def test_build_simulate_messages_includes_prior_dialogue_before_current_message():
     request = SimulateRequest(
         scenario="舍友晚上打游戏声音很大，影响睡眠。",

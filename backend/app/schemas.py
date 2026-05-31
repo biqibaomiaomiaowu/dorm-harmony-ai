@@ -835,6 +835,7 @@ class ScenarioTrainingReviewMeta(BaseModel):
     target_label: str
     difficulty_id: str
     difficulty_label: str
+    difficulty_description: str | None = None
 
 
 class CustomRehearsalReviewMeta(BaseModel):
