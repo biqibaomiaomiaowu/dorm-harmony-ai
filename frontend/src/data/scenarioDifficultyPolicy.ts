@@ -68,11 +68,11 @@ const advancedRoommates: RoommateProfile[] = [
     avatar: 'nailong',
     traits: {
       directness: 5,
-      emotional_reactivity: 3,
+      emotional_reactivity: 4,
       avoidance: 1,
       empathy: 1,
-      solution_willingness: 2,
-      boundary_sensitivity: 4,
+      solution_willingness: 1,
+      boundary_sensitivity: 5,
     },
   },
   {
