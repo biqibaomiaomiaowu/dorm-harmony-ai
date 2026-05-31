@@ -139,7 +139,7 @@ export interface ArchiveInsightResponse {
   safety_note: string
 }
 
-export const ARCHIVE_INSIGHT_CACHE_KEY = 'dorm-harmony:archive-insight-cache:v1'
+export const ARCHIVE_INSIGHT_CACHE_KEY = 'dorm-harmony:archive-insight-cache:v2'
 
 const EVENT_TYPE_MAP: Record<string, ArchiveEventType> = {
   noise_conflict: 'noise',
@@ -557,10 +557,13 @@ export async function fetchArchiveAnalysis(rangeDays = 30): Promise<ArchiveAnaly
   return raw
 }
 
-export async function fetchArchiveInsight(): Promise<ArchiveInsightResponse> {
-  const response = await fetch('/api/events/insight', {
-    method: 'POST',
-  })
+export async function fetchArchiveInsight(rangeDays = 30): Promise<ArchiveInsightResponse> {
+  const response = await fetch(
+    `/api/events/insight?range_days=${encodeURIComponent(String(rangeDays))}`,
+    {
+      method: 'POST',
+    },
+  )
 
   await assertOk(response, 'AI 心晴见解加载失败')
   const raw = (await response.json()) as unknown

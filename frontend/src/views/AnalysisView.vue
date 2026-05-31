@@ -7,6 +7,9 @@ import { LineChart } from 'echarts/charts'
 import { GridComponent, TitleComponent, TooltipComponent } from 'echarts/components'
 
 import { useGsapMotion } from '@/composables/useGsapMotion'
+import EmotionDistributionCard from '@/components/analysis/EmotionDistributionCard.vue'
+import EventInsightCard from '@/components/analysis/EventInsightCard.vue'
+import TrainingRecommendationCard from '@/components/analysis/TrainingRecommendationCard.vue'
 import { ANALYSIS_RESULT_STORAGE_KEY } from '@/data/week1'
 import {
   ARCHIVE_INSIGHT_CACHE_KEY,
@@ -29,6 +32,7 @@ const rangeOptions: Array<{ days: AnalysisRangeDays; label: string }> = [
   { days: 30, label: '近 30 天' },
   { days: 90, label: '近 90 天' },
 ]
+const emotionDistributionTones = ['fresh', 'warning', 'danger'] as const
 
 const EMPTY_ARCHIVE_RESULT: ArchiveAnalysisResult = {
   pressure_score: 0,
@@ -79,7 +83,17 @@ const trendPoints = computed(() => result.value.trend_points)
 const activePeriodEventCount = computed(
   () => result.value.active_period_count ?? result.value.active_30d_count,
 )
+const hasArchiveEvents = computed(() => result.value.event_count > 0)
+const hasActivePeriodEvents = computed(() => activePeriodEventCount.value > 0)
 const selectedRangeLabel = computed(() => `近 ${selectedRangeDays.value} 天`)
+const archiveInsightPeriodText = computed(() => `基于${selectedRangeLabel.value}事件生成`)
+const archiveInsightEmptyMessage = computed(() => {
+  if (hasArchiveEvents.value && !hasActivePeriodEvents.value) {
+    return `${selectedRangeLabel.value}暂无事件，暂不生成 AI 心晴见解。`
+  }
+
+  return '请先记录一条宿舍事件以生成 AI 心晴见解。'
+})
 const trendChartMeta = computed(() => {
   if (!trendPoints.value.length) {
     return null
@@ -114,12 +128,11 @@ let trendChartInstance: echarts.ECharts | null = null
 let trendChartResizeHandler: (() => void) | null = null
 let hasAnimatedAnalysisSecondary = false
 let lastAnimatedInsightKey = ''
+let archiveInsightRequestId = 0
 
 echarts.use([LineChart, GridComponent, TooltipComponent, TitleComponent, CanvasRenderer])
 
 const hasTrendData = computed(() => trendPoints.value.length > 0)
-
-const hasArchiveEvents = computed(() => result.value.event_count > 0)
 
 const sourceBreakdown = computed(() => {
   const tones = ['danger', 'warning', 'fresh']
@@ -144,12 +157,10 @@ const emotionDistribution = computed(() =>
   result.value.emotion_distribution.map((emotion, index) => ({
     ...emotion,
     percent: clampPercent(emotion.percent),
-    tone: ['fresh', 'warning', 'danger'][index % 3],
+    tone: emotionDistributionTones[index % emotionDistributionTones.length] ?? 'fresh',
   })),
 )
 
-const topEmotionLabels = computed(() => result.value.event_insight?.top_emotions ?? [])
-const topEventTypeLabels = computed(() => result.value.event_insight?.top_event_types ?? [])
 const trainingRecommendation = computed(() => result.value.training_recommendation)
 
 const normalizedScore = computed(() => {
@@ -519,28 +530,43 @@ function isArchiveInsightResponse(value: unknown): value is ArchiveInsightRespon
   )
 }
 
-function buildArchiveSignature(events: EventRecord[]) {
+function buildArchiveSignature(events: EventRecord[], rangeDays: AnalysisRangeDays) {
   return JSON.stringify(
-    events
-      .map((event) => ({
-        id: event.id,
-        created_at: event.created_at,
-        event_date: event.event_date,
-        event_type: event.event_type,
-        severity: event.severity,
-        frequency: event.frequency,
-        emotion: event.emotion,
-        has_communicated: event.has_communicated,
-        has_conflict: event.has_conflict,
-        description: event.description,
-      }))
-      .sort((left, right) => left.id.localeCompare(right.id)),
+    {
+      range_days: rangeDays,
+      events: events
+        .map((event) => ({
+          id: event.id,
+          created_at: event.created_at,
+          event_date: event.event_date,
+          event_type: event.event_type,
+          severity: event.severity,
+          frequency: event.frequency,
+          emotion: event.emotion,
+          has_communicated: event.has_communicated,
+          has_conflict: event.has_conflict,
+          description: event.description,
+        }))
+        .sort((left, right) => left.id.localeCompare(right.id)),
+    },
   )
 }
 
-function readCachedArchiveInsight(archiveSignature: string) {
+function archiveInsightCacheKey(rangeDays: AnalysisRangeDays) {
+  return `${ARCHIVE_INSIGHT_CACHE_KEY}:${rangeDays}`
+}
+
+function isCurrentArchiveInsightRequest(requestId: number, rangeDays: AnalysisRangeDays) {
+  return (
+    isAnalysisViewActive &&
+    requestId === archiveInsightRequestId &&
+    selectedRangeDays.value === rangeDays
+  )
+}
+
+function readCachedArchiveInsight(archiveSignature: string, rangeDays: AnalysisRangeDays) {
   try {
-    const raw = localStorage.getItem(ARCHIVE_INSIGHT_CACHE_KEY)
+    const raw = localStorage.getItem(archiveInsightCacheKey(rangeDays))
 
     if (!raw) {
       return null
@@ -551,6 +577,7 @@ function readCachedArchiveInsight(archiveSignature: string) {
     if (
       isRecord(parsed) &&
       parsed.archiveSignature === archiveSignature &&
+      parsed.rangeDays === rangeDays &&
       isArchiveInsightResponse(parsed.insight)
     ) {
       return parsed.insight
@@ -562,12 +589,17 @@ function readCachedArchiveInsight(archiveSignature: string) {
   return null
 }
 
-function writeCachedArchiveInsight(archiveSignature: string, insight: ArchiveInsightResponse) {
+function writeCachedArchiveInsight(
+  archiveSignature: string,
+  rangeDays: AnalysisRangeDays,
+  insight: ArchiveInsightResponse,
+) {
   try {
     localStorage.setItem(
-      ARCHIVE_INSIGHT_CACHE_KEY,
+      archiveInsightCacheKey(rangeDays),
       JSON.stringify({
         archiveSignature,
+        rangeDays,
         insight,
       }),
     )
@@ -576,11 +608,15 @@ function writeCachedArchiveInsight(archiveSignature: string, insight: ArchiveIns
   }
 }
 
-async function loadArchiveInsight(archiveSignature: string) {
-  const cachedInsight = readCachedArchiveInsight(archiveSignature)
+async function loadArchiveInsight(
+  archiveSignature: string,
+  rangeDays: AnalysisRangeDays,
+  requestId: number,
+) {
+  const cachedInsight = readCachedArchiveInsight(archiveSignature, rangeDays)
 
   if (cachedInsight) {
-    if (!isAnalysisViewActive) {
+    if (!isCurrentArchiveInsightRequest(requestId, rangeDays)) {
       return
     }
 
@@ -595,17 +631,17 @@ async function loadArchiveInsight(archiveSignature: string) {
   insightStatus.value = 'loading'
 
   try {
-    const insight = await fetchArchiveInsight()
+    const insight = await fetchArchiveInsight(rangeDays)
 
-    if (!isAnalysisViewActive) {
+    if (!isCurrentArchiveInsightRequest(requestId, rangeDays)) {
       return
     }
 
     archiveInsight.value = insight
-    writeCachedArchiveInsight(archiveSignature, insight)
+    writeCachedArchiveInsight(archiveSignature, rangeDays, insight)
     insightStatus.value = 'ready'
   } catch (error) {
-    if (!isAnalysisViewActive) {
+    if (!isCurrentArchiveInsightRequest(requestId, rangeDays)) {
       return
     }
 
@@ -627,9 +663,16 @@ async function loadArchiveInsight(archiveSignature: string) {
   }
 }
 
-async function loadArchiveInsightForCurrentArchive(eventCount: number) {
-  if (eventCount <= 0) {
+async function loadArchiveInsightForCurrentArchive(
+  activeEventCount: number,
+  rangeDays: AnalysisRangeDays,
+) {
+  const requestId = ++archiveInsightRequestId
+  archiveInsight.value = null
+
+  if (activeEventCount <= 0) {
     insightStatus.value = 'idle'
+    insightError.value = ''
     return
   }
 
@@ -639,13 +682,13 @@ async function loadArchiveInsightForCurrentArchive(eventCount: number) {
   try {
     const archive = await fetchEventArchive()
 
-    if (!isAnalysisViewActive) {
+    if (!isCurrentArchiveInsightRequest(requestId, rangeDays)) {
       return
     }
 
-    await loadArchiveInsight(buildArchiveSignature(archive.events))
+    await loadArchiveInsight(buildArchiveSignature(archive.events, rangeDays), rangeDays, requestId)
   } catch (error) {
-    if (!isAnalysisViewActive) {
+    if (!isCurrentArchiveInsightRequest(requestId, rangeDays)) {
       return
     }
 
@@ -656,19 +699,22 @@ async function loadArchiveInsightForCurrentArchive(eventCount: number) {
 }
 
 async function loadArchiveAnalysis() {
+  const rangeDays = selectedRangeDays.value
+
   isAnalysisLoading.value = true
   analysisError.value = ''
   insightStatus.value = 'idle'
   insightError.value = ''
   archiveInsight.value = null
+  archiveInsightRequestId += 1
   disposeTrendChart()
   hasAnimatedAnalysisSecondary = false
   lastAnimatedInsightKey = ''
 
   try {
-    const response = await fetchArchiveAnalysis(selectedRangeDays.value)
+    const response = await fetchArchiveAnalysis(rangeDays)
 
-    if (!isAnalysisViewActive) {
+    if (!isAnalysisViewActive || selectedRangeDays.value !== rangeDays) {
       return
     }
 
@@ -683,7 +729,7 @@ async function loadArchiveAnalysis() {
     isAnalysisLoading.value = false
     await nextTick()
 
-    if (!isAnalysisViewActive) {
+    if (!isAnalysisViewActive || selectedRangeDays.value !== rangeDays) {
       return
     }
 
@@ -692,7 +738,7 @@ async function loadArchiveAnalysis() {
     revealAnalysisInsightPanel()
     animateAnalysisProgress()
     syncTrendChart()
-    void loadArchiveInsightForCurrentArchive(response.event_count)
+    void loadArchiveInsightForCurrentArchive(result.value.active_period_count, rangeDays)
   } catch (error) {
     if (!isAnalysisViewActive) {
       return
@@ -780,7 +826,7 @@ watch(
     <section class="analysis-v2-hero page-pop-in">
       <h1>宿舍总压力分析报告</h1>
       <p>
-        基于事件档案内的所有记录，综合事件日期、频率、严重程度和沟通状态生成趋势提示。
+        档案事件数展示全量记录，其余压力、来源、情绪和训练建议基于当前分析周期生成。
       </p>
       <p
         v-if="isAnalysisLoading"
@@ -853,7 +899,36 @@ watch(
       </section>
 
       <section
-        v-else-if="hasArchiveEvents && !isAnalysisLoading"
+        v-else-if="hasArchiveEvents && !hasActivePeriodEvents && !isAnalysisLoading"
+        key="period-empty"
+        class="analysis-empty-v2 pop-card pop-shadow page-pop-in"
+      >
+        <div class="material-symbol" aria-hidden="true">event_busy</div>
+        <span class="risk-badge">当前周期暂无数据</span>
+        <h2>{{ selectedRangeLabel }}没有事件记录</h2>
+        <p>档案内共有 {{ result.event_count }} 条事件，但当前周期没有可分析事件。</p>
+        <div class="analysis-period-empty-stats" aria-label="事件数量摘要">
+          <div>
+            <span>档案事件数</span>
+            <strong>{{ result.event_count }}</strong>
+          </div>
+          <div>
+            <span>{{ selectedRangeLabel }}事件</span>
+            <strong>{{ activePeriodEventCount }}</strong>
+          </div>
+        </div>
+        <div class="analysis-actions analysis-empty-actions">
+          <RouterLink class="primary-action pop-shadow" :to="{ name: 'record' }" role="button">
+            记录当前周期事件
+          </RouterLink>
+          <RouterLink class="secondary-action pop-shadow" :to="{ name: 'archive' }" role="button">
+            查看事件档案
+          </RouterLink>
+        </div>
+      </section>
+
+      <section
+        v-else-if="hasArchiveEvents && hasActivePeriodEvents && !isAnalysisLoading"
         key="ready"
         class="analysis-ready-stack"
       >
@@ -937,33 +1012,10 @@ watch(
               </ol>
             </article>
 
-            <article class="analysis-emotion-panel analysis-signals-panel pop-card pop-shadow page-pop-in">
-              <h2>
-                <span class="material-symbol" aria-hidden="true">bar_chart</span>
-                情绪分布
-              </h2>
-              <div v-if="emotionDistribution.length > 0" class="analysis-emotion-bars">
-                <div
-                  v-for="emotion in emotionDistribution"
-                  :key="emotion.emotion"
-                  class="analysis-emotion-item"
-                >
-                  <div class="analysis-emotion-row">
-                    <span>{{ emotion.label }}</span>
-                    <strong>{{ emotion.count }} 次 · {{ emotion.percent }}%</strong>
-                  </div>
-                  <div class="analysis-emotion-track card-border">
-                    <i
-                      :class="['analysis-emotion-fill', `analysis-emotion-fill-${emotion.tone}`]"
-                      :style="{ width: `${emotion.percent}%` }"
-                    ></i>
-                  </div>
-                </div>
-              </div>
-              <p v-else class="analysis-source-empty">
-                {{ selectedRangeLabel }}暂无可汇总的情绪分布。
-              </p>
-            </article>
+            <EmotionDistributionCard
+              :emotions="emotionDistribution"
+              :range-label="selectedRangeLabel"
+            />
           </div>
         </div>
 
@@ -995,100 +1047,12 @@ watch(
           </p>
         </article>
 
-        <section class="analysis-deterministic-grid" aria-label="事件洞察与场景训练推荐">
-          <article class="analysis-event-insight-panel pop-card pop-shadow page-pop-in">
-            <h2>
-              <span class="material-symbol" aria-hidden="true">fact_check</span>
-              事件洞察
-            </h2>
-            <template v-if="result.event_insight">
-              <p class="analysis-event-summary">{{ result.event_insight.summary }}</p>
-              <dl class="analysis-event-metrics">
-                <div>
-                  <dt>统计周期</dt>
-                  <dd>{{ result.event_insight.period_days }} 天</dd>
-                </div>
-                <div>
-                  <dt>周期事件</dt>
-                  <dd>{{ result.event_insight.period_event_count }} 条</dd>
-                </div>
-                <div>
-                  <dt>已沟通</dt>
-                  <dd>{{ result.event_insight.communicated_count }} 条</dd>
-                </div>
-                <div>
-                  <dt>未沟通</dt>
-                  <dd>{{ result.event_insight.uncommunicated_count }} 条</dd>
-                </div>
-                <div>
-                  <dt>直接冲突</dt>
-                  <dd>{{ result.event_insight.conflict_count }} 条</dd>
-                </div>
-              </dl>
-              <div class="analysis-insight-tags">
-                <div>
-                  <span>主要情绪</span>
-                  <p v-if="topEmotionLabels.length > 0">
-                    {{ topEmotionLabels.join('、') }}
-                  </p>
-                  <p v-else>暂无明显集中项</p>
-                </div>
-                <div>
-                  <span>主要事件类型</span>
-                  <p v-if="topEventTypeLabels.length > 0">
-                    {{ topEventTypeLabels.join('、') }}
-                  </p>
-                  <p v-else>暂无明显集中项</p>
-                </div>
-              </div>
-            </template>
-            <p v-else class="analysis-neutral-empty">
-              {{ selectedRangeLabel }}暂无事件洞察。继续记录事件后，这里会展示客观统计摘要。
-            </p>
-          </article>
-
-          <article class="analysis-training-panel pop-card pop-shadow page-pop-in">
-            <h2>
-              <span class="material-symbol" aria-hidden="true">school</span>
-              推荐场景训练
-            </h2>
-            <template v-if="trainingRecommendation">
-              <div class="analysis-training-heading">
-                <span>{{ trainingRecommendation.category_label }}</span>
-                <h3>{{ trainingRecommendation.scenario_title }}</h3>
-              </div>
-              <dl class="analysis-training-meta">
-                <div>
-                  <dt>训练目标</dt>
-                  <dd>{{ trainingRecommendation.target_label }}</dd>
-                </div>
-                <div>
-                  <dt>难度</dt>
-                  <dd>
-                    {{ trainingRecommendation.difficulty_label }}
-                    <small>{{ trainingRecommendation.difficulty_description }}</small>
-                  </dd>
-                </div>
-              </dl>
-              <p>{{ trainingRecommendation.reason }}</p>
-              <blockquote>
-                {{ trainingRecommendation.opening_suggestion }}
-              </blockquote>
-              <p class="analysis-training-safety">
-                {{ trainingRecommendation.safety_note }}
-              </p>
-              <button class="primary-action pop-shadow" type="button" @click="startRecommendedTraining">
-                开始推荐场景
-                <span class="action-icon material-symbol" aria-hidden="true">arrow_forward</span>
-              </button>
-            </template>
-            <div v-else class="analysis-training-empty">
-              <p>当前周期暂未形成明确场景推荐。可以继续记录事件，或先选择通用演练。</p>
-              <button class="secondary-action pop-shadow" type="button" @click="startRecommendedTraining">
-                选择通用演练
-              </button>
-            </div>
-          </article>
+        <section class="analysis-deterministic-grid" aria-label="情绪与事件洞察和推荐训练">
+          <EventInsightCard :insight="result.event_insight" :range-label="selectedRangeLabel" />
+          <TrainingRecommendationCard
+            :recommendation="trainingRecommendation"
+            @start="startRecommendedTraining"
+          />
         </section>
       </section>
     </Transition>
@@ -1104,6 +1068,7 @@ watch(
         <span class="material-symbol" aria-hidden="true">auto_awesome</span>
         AI 心晴见解
       </h2>
+      <p class="analysis-ai-period">{{ archiveInsightPeriodText }}</p>
 
       <Transition
         name="analysis-ai-panel"
@@ -1118,7 +1083,7 @@ watch(
           aria-live="polite"
         >
           <span class="material-symbol" aria-hidden="true">progress_activity</span>
-          正在生成：AI 心晴见解生成中……
+          正在生成：{{ archiveInsightPeriodText }}……
         </p>
         <p v-else-if="insightError" key="error" class="ai-state" role="alert">
           <span class="material-symbol" aria-hidden="true">cloud_off</span>
@@ -1151,7 +1116,7 @@ watch(
           </article>
         </div>
         <p v-else key="empty" class="ai-state">
-          请先记录一条宿舍事件以生成 AI 心晴见解。
+          {{ archiveInsightEmptyMessage }}
         </p>
       </Transition>
 
@@ -1237,6 +1202,37 @@ watch(
   display: grid;
 }
 
+.analysis-period-empty-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  width: min(100%, 420px);
+  margin: 2px auto 0;
+}
+
+.analysis-period-empty-stats div {
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-container);
+  padding: 12px;
+}
+
+.analysis-period-empty-stats span {
+  display: block;
+  color: var(--ink-soft);
+  font-size: var(--font-label-bold);
+  font-weight: 800;
+}
+
+.analysis-period-empty-stats strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--primary);
+  font-family: Outfit, system-ui, sans-serif;
+  font-size: var(--font-headline-md);
+  line-height: 1;
+}
+
 .analysis-source-conclusion {
   margin: 0 0 16px;
   border: 2px solid var(--ink);
@@ -1294,47 +1290,6 @@ watch(
   color: var(--ink-soft);
   font-size: 0.86rem;
   font-weight: 800;
-}
-
-.analysis-emotion-bars {
-  display: grid;
-  gap: 14px;
-}
-
-.analysis-emotion-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 6px;
-  color: var(--ink);
-  font-size: var(--font-label-bold);
-  font-weight: 900;
-}
-
-.analysis-emotion-track {
-  position: relative;
-  overflow: hidden;
-  height: 22px;
-  border-radius: 999px;
-  background: var(--surface-container);
-}
-
-.analysis-emotion-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  border-right: 2px solid var(--ink);
-}
-
-.analysis-emotion-fill-fresh {
-  background: var(--primary);
-}
-
-.analysis-emotion-fill-warning {
-  background: var(--tertiary);
-}
-
-.analysis-emotion-fill-danger {
-  background: var(--secondary);
 }
 
 .analysis-trend-panel {
@@ -1420,157 +1375,11 @@ watch(
   margin-top: 24px;
 }
 
-.analysis-event-insight-panel,
-.analysis-training-panel {
-  display: grid;
-  align-content: start;
-  gap: 16px;
-  border: 2px solid var(--ink);
-  border-radius: 12px;
-  background: var(--surface);
-  padding: 24px;
-}
-
-.analysis-event-insight-panel h2,
-.analysis-training-panel h2 {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 0;
-  font-size: var(--font-headline-md);
-}
-
-.analysis-event-insight-panel h2 .material-symbol,
-.analysis-training-panel h2 .material-symbol {
-  display: inline-grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  border: 2px solid var(--ink);
-  border-radius: 10px;
-  background: var(--primary-container);
-  box-shadow: 2px 2px 0 0 var(--shadow-dark);
-  color: #ffffff;
-}
-
-.analysis-training-panel h2 .material-symbol {
-  background: var(--tertiary);
-  color: var(--ink);
-}
-
-.analysis-event-summary,
-.analysis-training-panel p,
-.analysis-neutral-empty,
-.analysis-training-empty p {
-  margin: 0;
+.analysis-ai-period {
+  margin: -18px 0 0;
   color: var(--ink-soft);
-  font-weight: 700;
-  line-height: 1.6;
-}
-
-.analysis-event-summary {
-  border: 2px solid var(--ink);
-  border-radius: 12px;
-  background: #ffffff;
-  padding: 12px;
-}
-
-.analysis-event-metrics,
-.analysis-training-meta {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin: 0;
-}
-
-.analysis-event-metrics div,
-.analysis-training-meta div {
-  border: 2px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-container);
-  padding: 10px;
-}
-
-.analysis-event-metrics dt,
-.analysis-training-meta dt {
-  color: var(--ink-soft);
-  font-size: 0.82rem;
-  font-weight: 900;
-}
-
-.analysis-event-metrics dd,
-.analysis-training-meta dd {
-  margin: 4px 0 0;
-  color: var(--ink);
-  font-weight: 900;
-}
-
-.analysis-training-meta small {
-  display: block;
-  margin-top: 4px;
-  color: var(--ink-soft);
-  font-size: 0.82rem;
-  line-height: 1.45;
-}
-
-.analysis-insight-tags {
-  display: grid;
-  gap: 10px;
-}
-
-.analysis-insight-tags div {
-  border-left: 6px solid var(--primary);
-  background: #ffffff;
-  padding: 10px 12px;
-}
-
-.analysis-insight-tags div:nth-child(2) {
-  border-left-color: var(--secondary);
-}
-
-.analysis-insight-tags span,
-.analysis-training-heading span {
-  color: var(--ink-soft);
-  font-size: 0.82rem;
-  font-weight: 900;
-}
-
-.analysis-insight-tags p,
-.analysis-training-heading h3 {
-  margin: 4px 0 0;
-}
-
-.analysis-training-heading h3 {
-  color: var(--ink);
-  font-size: 1.35rem;
-}
-
-.analysis-training-panel blockquote {
-  margin: 0;
-  border-left: 6px solid var(--secondary);
-  background: #ffffff;
-  padding: 12px 14px;
-  color: var(--ink);
+  font-size: var(--font-label-bold);
   font-weight: 800;
-  line-height: 1.6;
-}
-
-.analysis-training-safety {
-  border: 2px dashed var(--ink);
-  border-radius: 12px;
-  background: var(--surface-container);
-  padding: 12px;
-}
-
-.analysis-training-panel .primary-action,
-.analysis-training-panel .secondary-action {
-  width: 100%;
-  justify-content: center;
-}
-
-.analysis-training-empty {
-  display: grid;
-  gap: 16px;
 }
 
 @keyframes analysis-trend-in {
@@ -1594,6 +1403,10 @@ watch(
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .analysis-period-empty-stats {
+    grid-template-columns: 1fr;
+  }
+
   .analysis-trend-panel {
     padding: 22px;
   }
@@ -1603,15 +1416,8 @@ watch(
     min-height: 220px;
   }
 
-  .analysis-deterministic-grid,
-  .analysis-event-metrics,
-  .analysis-training-meta {
+  .analysis-deterministic-grid {
     grid-template-columns: 1fr;
-  }
-
-  .analysis-event-insight-panel,
-  .analysis-training-panel {
-    padding: 20px;
   }
 }
 </style>
