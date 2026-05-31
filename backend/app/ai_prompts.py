@@ -159,8 +159,9 @@ ARCHIVE_INSIGHT_ANALYSIS_FIELDS = {
     "suggestion",
     "recommend_simulation",
     "event_count",
-    "active_30d_count",
     "source_breakdown",
+    "period_days",
+    "active_period_count",
 }
 
 

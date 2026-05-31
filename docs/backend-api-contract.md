@@ -233,13 +233,13 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 
 ### GET /api/events/analysis
 
-状态：已实现。后端读取当前事件档案，并按当前评分模型重新计算总压力分析。
+状态：已实现。后端读取当前事件档案，并按 `range_days` 当前周期事件重新计算总压力分析。
 
 请求参数：
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `range_days` | number | 否 | 压力趋势、当前周期事件数、情绪分布、事件洞察和训练推荐使用的周期天数；仅支持 `7`、`15`、`30`、`90`，默认 `30` |
+| `range_days` | number | 否 | 档案压力分析使用的当前周期天数；仅支持 `7`、`15`、`30`、`90`，默认 `30` |
 
 错误语义：
 
@@ -251,18 +251,18 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `pressure_score` | number | 0-100 总压力值 |
-| `risk_level` | string | 风险等级代码：`stable`、`pressure`、`high`、`severe` |
-| `risk_label` | string | 风险等级中文标签 |
-| `main_sources` | string[] | 主要压力来源，来自 `source_breakdown[].label` |
-| `emotion_keywords` | string[] | 当前情绪关键词 |
-| `trend_message` | string | 事件档案压力趋势提示 |
-| `suggestion` | string | 下一步沟通或求助建议 |
-| `recommend_simulation` | boolean | 是否建议进入沟通演练 |
+| `pressure_score` | number | 当前周期内事件计算出的 0-100 总压力值 |
+| `risk_level` | string | 当前周期风险等级代码：`stable`、`pressure`、`high`、`severe` |
+| `risk_label` | string | 当前周期风险等级中文标签 |
+| `main_sources` | string[] | 当前周期主要压力来源，来自 `source_breakdown[].label` |
+| `emotion_keywords` | string[] | 当前周期内事件的情绪关键词 |
+| `trend_message` | string | 当前周期事件档案压力趋势提示 |
+| `suggestion` | string | 基于当前周期压力的下一步沟通或求助建议 |
+| `recommend_simulation` | boolean | 基于当前周期压力，是否建议进入沟通演练 |
 | `disclaimer` | string | 非诊断性安全提示 |
-| `event_count` | number | 事件档案总条数 |
-| `active_30d_count` | number | 近 30 天事件数 |
-| `source_breakdown` | object[] | 按用户记录的 `event_type` 聚合后的压力贡献占比 |
+| `event_count` | number | 事件档案全量总条数，不随 `range_days` 改变 |
+| `active_30d_count` | number | legacy 兼容字段：全档案中近 30 天事件数，不作为页面主展示周期依据 |
+| `source_breakdown` | object[] | 当前周期内按用户记录的 `event_type` 聚合后的压力贡献占比 |
 | `source_breakdown[].label` | string | 事件类型中文标签：噪音冲突、作息冲突、卫生冲突、费用冲突、隐私边界、情绪冲突 |
 | `source_breakdown[].percent` | number | 该事件类型贡献占比，返回项合计为 100 |
 | `source_breakdown[].contribution` | number | 该事件类型的压力贡献，按 `analyze_pressure(event).pressure_score * recency_weight` 聚合 |
@@ -278,7 +278,7 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 | `source_insights[].label` | string | 压力来源中文标签 |
 | `source_insights[].percent` | number | 该来源贡献占比 |
 | `source_insights[].contribution` | number | 该来源压力贡献值 |
-| `source_insights[].event_count` | number | 该来源在档案中的事件数量 |
+| `source_insights[].event_count` | number | 该来源在当前周期内的事件数量 |
 | `source_insights[].recent_event_date` | string/null | 该来源最近一次事件日期，格式为 `YYYY-MM-DD` |
 | `source_insights[].explanation` | string | 来源占比、事件数和最近日期的客观解释 |
 | `main_source_conclusion` | string | 主要压力来源结论 |
@@ -312,8 +312,8 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 
 说明：
 
-- `pressure_score`、`risk_level`、`risk_label`、`main_sources`、`source_breakdown` 和 `active_30d_count` 保持全档案/近 30 天兼容口径；切换 `range_days` 不会让左侧总压力指数按周期跳变。
-- `active_period_count`、`trend_points`、`emotion_distribution`、`event_insight` 和 `training_recommendation` 使用当前 `range_days` 周期。
+- `event_count` 始终表示事件档案全量总条数；`active_30d_count` 仅作为旧版兼容字段保留，不参与页面主展示、周期压力计算或 AI 心晴见解输入。其余展示字段均使用当前 `range_days` 周期内事件。
+- 当全档案非空但当前周期内无事件时，`event_count` 仍返回全档案总条数，`active_period_count=0`，周期压力按 `pressure_score=0`、`risk_level=stable` 展示，来源、情绪分布、事件洞察和训练推荐为空，并提示“当前周期内暂无事件记录”。
 - 档案汇总和趋势点都按当前评分模型调用 `analyze_pressure(event)` 重算；`EventRecord.single_analysis` 只作为事件创建时的快照保留。
 - `发生频率较高`、`尚未有效沟通`、`已出现争吵或冷战` 仍会通过单条事件压力分影响贡献值，但不会作为 `source_breakdown` 的独立类别返回。
 
@@ -467,9 +467,15 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 
 ### POST /api/events/insight
 
-状态：已实现。基于当前事件档案和 `/api/events/analysis` 的总压力分析调用 DeepSeek `deepseek-v4-flash`，生成结构化 AI 心晴见解。
+状态：已实现。基于当前周期内事件和同周期 `/api/events/analysis` 总压力分析调用 DeepSeek `deepseek-v4-flash`，生成结构化 AI 心晴见解。
 
 请求字段：无请求体。后端从当前事件档案读取已记录事件，并在服务端重新计算总压力分析。
+
+请求参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `range_days` | number | 否 | AI 心晴见解使用的当前周期天数；仅支持 `7`、`15`、`30`、`90`，默认 `30` |
 
 响应字段：
 
@@ -499,6 +505,8 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 | 场景 | HTTP 状态码 | 说明 |
 | --- | --- | --- |
 | 当前没有事件档案 | `400` | 返回 `请先记录至少一条事件后再生成 AI 心晴见解。` |
+| 当前周期内暂无事件 | `400` | 返回 `当前周期内暂无事件，无法生成 AI 心晴见解。` |
+| `range_days` 不在支持范围内 | `422` | 例如 `range_days=14` 返回 `range_days must be one of 7, 15, 30, 90` |
 | 未配置 `DEEPSEEK_API_KEY` 或兼容的 `OPENAI_API_KEY` | `503` | AI 服务未配置，不返回模板伪结果 |
 | LangChain / DeepSeek 调用失败 | `502` | 上游模型调用失败 |
 | AI 输出结构异常或 `safety_note` 不符合安全边界 | `502` | 模型输出无法解析为 `ArchiveInsightResponse`，或安全提示缺少必要边界 |
@@ -750,6 +758,8 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 | 请求字段非法 | `422` | FastAPI / Pydantic 校验失败，返回字段级错误信息 |
 | conversation memory 不存在 | `400` | `/api/simulate`、`/api/simulate/stream` 或 `/api/review` 传入旧 `conversation_id` 时，提示重新演练 |
 | 当前没有事件档案 | `400` | `/api/events/insight` 在没有事件记录时返回 `请先记录至少一条事件后再生成 AI 心晴见解。` |
+| 当前周期内暂无事件 | `400` | `/api/events/insight?range_days=7/15/30/90` 在当前周期无事件时返回 `当前周期内暂无事件，无法生成 AI 心晴见解。` |
+| 周期参数非法 | `422` | `/api/events/analysis` 或 `/api/events/insight` 传入不支持的 `range_days` 时返回 `range_days must be one of 7, 15, 30, 90` |
 | 删除不存在事件 | `404` | `DELETE /api/events/{id}` 返回 `事件档案不存在或已被删除。` |
 | 复盘历史不存在 | `404` | `GET /api/reviews/{review_id}` 返回 `复盘历史不存在或已被删除。` |
 | 未配置 `DEEPSEEK_API_KEY` 或兼容的 `OPENAI_API_KEY` | `503` | AI 服务未配置，`/api/simulate`、`/api/simulate/stream`、`/api/review` 和 `/api/events/insight` 不返回模板伪结果 |

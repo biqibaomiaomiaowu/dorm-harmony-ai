@@ -73,10 +73,18 @@ pressure_score = round(
 
 ## 事件档案总压力模型
 
-事件档案总压力用于 `GET /api/events/analysis`，输入为已经记录的全部事件。模型先复用单事件
-`analyze_pressure()` 计算每条事件的 `single_score_i`，再结合事件日期评估当前档案压力。
+事件档案总压力用于 `GET /api/events/analysis`，输入为已经记录的全部事件和
+`range_days` 当前周期。模型先拆分：
+
+- `all_events`：事件档案全量记录，仅用于 `event_count` 和 legacy `active_30d_count`。
+- `period_events`：当前周期内事件，用于压力分、风险等级、主要来源、趋势、情绪分布、事件洞察和训练推荐。
+
+随后复用单事件 `analyze_pressure()` 计算周期内每条事件的 `single_score_i`，
+再结合事件日期评估当前周期档案压力。
 
 ### 时间权重
+
+以下时间权重只作用于 `period_events`。
 
 | 距离事件发生天数 | `recency_weight_i` |
 | --- | --- |
@@ -92,11 +100,13 @@ pressure_score = round(
 weighted_average =
   sum(single_score_i * recency_weight_i) / max(sum(recency_weight_i), 1)
 
-active_30d_count = count(events where days_since_event <= 30)
-event_type_count = count(distinct event_type in all events)
+active_period_count = count(period_events)
+event_type_count = count(distinct event_type in period_events)
+
+active_30d_count = count(all_events where days_since_event <= 30)
 
 accumulation_bonus =
-  min(15, round(5 * ln(1 + max(active_30d_count - 1, 0))))
+  min(15, round(5 * ln(1 + max(active_period_count - 1, 0))))
 
 diversity_bonus =
   min(8, 2 * max(event_type_count - 1, 0))
@@ -106,10 +116,11 @@ archive_pressure_score =
 ```
 
 `max(sum(recency_weight_i), 1)` 用于表达“当前压力”的衰减：只有旧事件时，低时间权重不会在分母中被完全抵消；近期单条事件仍保持接近单事件分数。
+`active_30d_count` 是兼容旧前端/旧数据展示的 legacy 字段，不参与当前周期累计加分，也不作为页面主展示周期依据。
 
 ### 主要压力来源贡献
 
-`source_breakdown` 只按用户记录的 `event_type` 聚合压力贡献。每条事件仍先通过
+`source_breakdown` 只按当前周期内用户记录的 `event_type` 聚合压力贡献。每条事件仍先通过
 `analyze_pressure()` 计算单条压力分，因此发生频率、是否有效沟通、是否出现争吵或冷战
 会影响 `single_score_i`；但这些因素不会再作为独立来源标签返回。
 
@@ -137,6 +148,7 @@ event_type_label contribution += single_score_i * recency_weight_i
 | 情况 | 预期 |
 | --- | --- |
 | 单条近期事件 | 总压力接近该事件单事件分数，不额外放大；夜间噪音示例为 76，风险等级为 `high` |
-| 近期多次事件 | 近 30 天多条事件会触发累计加成，不同事件类型会触发少量多源加成，可能进入 `severe` |
-| 旧事件 | 60 天前事件仍有低权重影响，但不会主导当前压力 |
+| 当前周期内多次事件 | 当前周期内多条事件会触发累计加成，不同事件类型会触发少量多源加成，可能进入 `severe` |
+| 周期外事件 | 保留在 `event_count` 全档案总数中，但不参与当前周期压力、来源、趋势、情绪分布、事件洞察或训练推荐 |
 | 无事件 | 返回 `pressure_score=0`、`risk_level=stable`、`risk_label=关系平稳`，并提示先记录事件 |
+| 全档案非空但当前周期无事件 | 返回全档案 `event_count`，`active_period_count=0`，当前周期压力按 `pressure_score=0`、`risk_level=stable` 展示，来源和训练推荐为空，并提示当前周期内暂无事件记录 |

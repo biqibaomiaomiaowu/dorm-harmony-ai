@@ -69,10 +69,29 @@ def test_single_event_returns_one_trend_point_and_low_sample_explanation():
     assert "记录较少" in result.trend_explanation or "初步参考" in result.trend_explanation
 
 
-def test_period_days_changes_active_period_count_but_keeps_active_30d_count():
+def test_period_days_limits_pressure_metrics_but_keeps_active_30d_count_legacy():
     store = InMemoryEventStore()
-    _add_event(store, event_date=date(2026, 5, 15), description="今天的噪音事件。")
-    _add_event(store, event_date=date(2026, 4, 25), description="20 天前的噪音事件。")
+    _add_event(
+        store,
+        event_date=date(2026, 5, 15),
+        severity=1,
+        frequency="occasional",
+        emotion="helpless",
+        has_communicated=True,
+        has_conflict=False,
+        description="今天只是公共桌面偶尔有点乱，已经沟通过。",
+    )
+    _add_event(
+        store,
+        event_date=date(2026, 4, 25),
+        event_type="hygiene",
+        severity=5,
+        frequency="daily",
+        emotion="angry",
+        has_communicated=False,
+        has_conflict=True,
+        description="20 天前公共区域长期没人整理，已经争吵。",
+    )
     _add_event(store, event_date=date(2026, 4, 5), description="40 天前的噪音事件。")
 
     result_7d = analyze_archive_pressure(
@@ -90,7 +109,43 @@ def test_period_days_changes_active_period_count_but_keeps_active_30d_count():
     assert result_30d.active_period_count == 2
     assert result_7d.active_30d_count == 2
     assert result_30d.active_30d_count == 2
-    assert result_7d.pressure_score == result_30d.pressure_score
+    assert result_7d.pressure_score < result_30d.pressure_score
+    assert result_7d.main_sources == ["噪音冲突"]
+    assert result_30d.main_sources == ["卫生冲突", "噪音冲突"]
+    assert "近 7 天 1 条" in result_7d.trend_message
+    assert "近 30 天 2 条" in result_30d.trend_message
+
+
+def test_non_empty_archive_with_empty_period_returns_stable_period_metrics():
+    store = InMemoryEventStore()
+    _add_event(
+        store,
+        event_date=date(2026, 5, 7),
+        severity=5,
+        frequency="daily",
+        emotion="angry",
+        has_communicated=False,
+        has_conflict=True,
+        description="8 天前发生过一次很强烈的冲突。",
+    )
+
+    result = analyze_archive_pressure(
+        store.list(),
+        today=date(2026, 5, 15),
+        period_days=7,
+    )
+
+    assert result.event_count == 1
+    assert result.active_period_count == 0
+    assert result.active_30d_count == 1
+    assert result.pressure_score == 0
+    assert result.risk_level == "stable"
+    assert result.main_sources == []
+    assert result.emotion_keywords == []
+    assert result.source_breakdown == []
+    assert result.emotion_distribution == []
+    assert result.training_recommendation is None
+    assert "当前周期内暂无事件记录" in result.trend_message
 
 
 def test_trend_points_are_date_sorted_and_average_same_day_scores():

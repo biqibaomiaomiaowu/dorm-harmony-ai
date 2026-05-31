@@ -808,6 +808,8 @@ def test_build_archive_insight_messages_serializes_events_and_analysis():
         event_count=1,
         active_30d_count=1,
         source_breakdown=[],
+        period_days=7,
+        active_period_count=1,
     )
 
     messages = build_archive_insight_messages([event], analysis)
@@ -828,6 +830,9 @@ def test_build_archive_insight_messages_serializes_events_and_analysis():
     assert '"has_conflict": true' in message_content
     assert '"description": "舍友晚上打游戏声音很大，影响睡眠。"' in message_content
     assert '"pressure_score": 76' in message_content
+    assert '"period_days": 7' in message_content
+    assert '"active_period_count": 1' in message_content
+    assert "active_30d_count" not in message_content
     assert "event-1" not in message_content
     assert "created_at" not in message_content
     assert "single_analysis" not in message_content

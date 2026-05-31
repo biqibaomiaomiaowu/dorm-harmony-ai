@@ -1,6 +1,7 @@
 """FastAPI 应用入口，负责路由、CORS 和服务层错误映射。"""
 
 from contextlib import asynccontextmanager
+from datetime import date
 import json
 import logging
 import os
@@ -19,7 +20,7 @@ from app.ai_service import (
     ReviewDialogueInvalidError,
 )
 from app.archive_analysis import analyze_archive_pressure
-from app.archive_metrics import SUPPORTED_RANGE_DAYS
+from app.archive_metrics import SUPPORTED_RANGE_DAYS, filter_events_by_period
 from app.env import load_project_env
 from app.event_store import EventStore, SQLiteEventStore, get_default_sqlite_path
 from app.review_store import SQLiteReviewHistoryStore
@@ -152,6 +153,16 @@ def _truncate_archive_text(text: str, max_length: int) -> str:
     return text[: max_length - 3].rstrip() + "..."
 
 
+def _validate_range_days(range_days: int) -> int:
+    """校验档案周期查询参数，保持 analysis 和 insight 的错误口径一致。"""
+    if range_days not in SUPPORTED_RANGE_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail="range_days must be one of 7, 15, 30, 90",
+        )
+    return range_days
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     """返回后端健康检查状态，不依赖 AI 服务配置。"""
@@ -206,20 +217,18 @@ def analyze_event_archive(
     event_store: EventStore = Depends(get_event_store),
 ) -> ArchiveAnalysisResponse:
     """汇总事件档案并返回总压力分析，不调用 AI 服务。"""
-    if range_days not in SUPPORTED_RANGE_DAYS:
-        raise HTTPException(
-            status_code=422,
-            detail="range_days must be one of 7, 15, 30, 90",
-        )
+    range_days = _validate_range_days(range_days)
     return analyze_archive_pressure(event_store.list(), period_days=range_days)
 
 
 @app.post("/api/events/insight", response_model=ArchiveInsightResponse)
 def archive_insight(
+    range_days: int = Query(default=30),
     event_store: EventStore = Depends(get_event_store),
     ai_service: DormHarmonyAIService = Depends(get_ai_service),
 ) -> ArchiveInsightResponse:
     """基于事件档案和总压力分析生成 AI 心晴见解。"""
+    range_days = _validate_range_days(range_days)
     events = event_store.list()
     if not events:
         raise HTTPException(
@@ -227,9 +236,21 @@ def archive_insight(
             detail="请先记录至少一条事件后再生成 AI 心晴见解。",
         )
 
-    analysis = analyze_archive_pressure(events)
+    today = date.today()
+    period_events = filter_events_by_period(events, today, range_days)
+    if not period_events:
+        raise HTTPException(
+            status_code=400,
+            detail="当前周期内暂无事件，无法生成 AI 心晴见解。",
+        )
+
+    analysis = analyze_archive_pressure(
+        events,
+        today=today,
+        period_days=range_days,
+    )
     try:
-        return ai_service.archive_insight(events, analysis)
+        return ai_service.archive_insight(period_events, analysis)
     except AIServiceConfigurationError as exc:
         # 配置缺失是本地部署问题，前端按 503 展示“需要配置 AI 服务”。
         raise HTTPException(status_code=503, detail=str(exc)) from exc

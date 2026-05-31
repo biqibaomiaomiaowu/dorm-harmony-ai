@@ -161,9 +161,13 @@ class CapturingSimulateService(FakeAIService):
 class CapturingArchiveInsightService(FakeAIService):
     def __init__(self):
         self.archive_insight_called = False
+        self.received_events = None
+        self.received_analysis = None
 
     def archive_insight(self, events, analysis):
         self.archive_insight_called = True
+        self.received_events = list(events)
+        self.received_analysis = analysis
         return super().archive_insight(events, analysis)
 
 
@@ -569,6 +573,125 @@ def test_event_analysis_endpoint_accepts_supported_range_days():
     range_90_body = range_90_response.json()
     assert range_90_body["period_days"] == 90
     assert range_90_body["active_period_count"] == 2
+
+
+def test_event_analysis_range_7_uses_period_events_for_derived_metrics():
+    event_store = InMemoryEventStore()
+    app.dependency_overrides[get_event_store] = lambda: event_store
+    today = date.today()
+    recent_event = event_store.add(
+        EventRecordCreate(
+            event_date=today,
+            event_type="noise",
+            severity=2,
+            frequency="occasional",
+            emotion="helpless",
+            has_communicated=True,
+            has_conflict=False,
+            description="今天公共桌面偶尔有点乱，已经提醒过一次。",
+        )
+    )
+    event_store.add(
+        EventRecordCreate(
+            event_date=today - timedelta(days=8),
+            event_type="hygiene",
+            severity=5,
+            frequency="daily",
+            emotion="angry",
+            has_communicated=False,
+            has_conflict=True,
+            description="8 天前公共区域长期没人整理，已经争吵。",
+        )
+    )
+
+    response = client.get("/api/events/analysis?range_days=7")
+
+    assert response.status_code == 200
+    body = response.json()
+    expected_score = recent_event.single_analysis.pressure_score
+    assert body["event_count"] == 2
+    assert body["active_30d_count"] == 2
+    assert body["active_period_count"] == 1
+    assert body["pressure_score"] == expected_score
+    assert body["risk_level"] == recent_event.single_analysis.risk_level
+    assert body["main_sources"] == ["噪音冲突"]
+    assert body["source_breakdown"] == [
+        {
+            "label": "噪音冲突",
+            "percent": 100,
+            "contribution": float(expected_score),
+        }
+    ]
+    assert body["trend_points"] == [
+        {
+            "date": today.isoformat(),
+            "pressure_score": expected_score,
+            "event_count": 1,
+        }
+    ]
+    assert "1 个记录日期" in body["trend_explanation"]
+    assert body["source_insights"] == [
+        {
+            "rank": 1,
+            "label": "噪音冲突",
+            "percent": 100,
+            "contribution": float(expected_score),
+            "event_count": 1,
+            "recent_event_date": today.isoformat(),
+            "explanation": (
+                f"噪音冲突占档案压力约 100%，共有 1 条相关记录，"
+                f"最近一次在 {today.isoformat()}（今天）。"
+            ),
+        }
+    ]
+    assert "噪音冲突" in body["main_source_conclusion"]
+    assert "卫生冲突" not in body["main_source_conclusion"]
+    assert body["emotion_distribution"] == [
+        {"emotion": "helpless", "label": "无奈", "count": 1, "percent": 100}
+    ]
+    assert body["event_insight"]["period_days"] == 7
+    assert body["event_insight"]["period_event_count"] == 1
+    assert body["event_insight"]["top_event_types"] == ["噪音冲突"]
+    assert body["event_insight"]["top_emotions"] == ["无奈"]
+    assert body["event_insight"]["conflict_count"] == 0
+    assert "卫生冲突" not in body["event_insight"]["summary"]
+    assert "愤怒" not in body["event_insight"]["summary"]
+    assert body["training_recommendation"]["category_id"] == "noise"
+    assert "近 7 天 1 条" in body["trend_message"]
+
+
+def test_event_analysis_range_7_empty_period_keeps_archive_count_and_stable_metrics():
+    event_store = InMemoryEventStore()
+    app.dependency_overrides[get_event_store] = lambda: event_store
+    today = date.today()
+    event_store.add(
+        EventRecordCreate(
+            event_date=today - timedelta(days=8),
+            event_type="hygiene",
+            severity=5,
+            frequency="daily",
+            emotion="angry",
+            has_communicated=False,
+            has_conflict=True,
+            description="8 天前公共区域长期没人整理，已经争吵。",
+        )
+    )
+
+    response = client.get("/api/events/analysis?range_days=7")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["event_count"] == 1
+    assert body["active_30d_count"] == 1
+    assert body["active_period_count"] == 0
+    assert body["pressure_score"] == 0
+    assert body["risk_level"] == "stable"
+    assert body["main_sources"] == []
+    assert body["emotion_keywords"] == []
+    assert body["source_breakdown"] == []
+    assert body["emotion_distribution"] == []
+    assert body["training_recommendation"] is None
+    assert "当前周期内暂无事件记录" in body["trend_message"]
 
 
 def test_event_analysis_endpoint_rejects_invalid_range_days():
@@ -1434,6 +1557,147 @@ def test_archive_insight_endpoint_returns_400_when_archive_is_empty():
 
     assert response.status_code == 400
     assert response.json()["detail"] == "请先记录至少一条事件后再生成 AI 心晴见解。"
+    assert ai_service.archive_insight_called is False
+
+
+def test_archive_insight_range_7_passes_only_period_events_to_ai_service():
+    event_store = InMemoryEventStore()
+    ai_service = CapturingArchiveInsightService()
+    app.dependency_overrides[get_event_store] = lambda: event_store
+    app.dependency_overrides[get_ai_service] = lambda: ai_service
+    today = date.today()
+    recent_event = event_store.add(
+        EventRecordCreate(
+            event_date=today,
+            event_type="noise",
+            severity=2,
+            frequency="occasional",
+            emotion="helpless",
+            has_communicated=True,
+            has_conflict=False,
+            description="今天公共桌面偶尔有点乱，已经提醒过一次。",
+        )
+    )
+    event_store.add(
+        EventRecordCreate(
+            event_date=today - timedelta(days=8),
+            event_type="hygiene",
+            severity=5,
+            frequency="daily",
+            emotion="angry",
+            has_communicated=False,
+            has_conflict=True,
+            description="8 天前公共区域长期没人整理，已经争吵。",
+        )
+    )
+
+    response = client.post("/api/events/insight?range_days=7")
+
+    assert response.status_code == 200
+    assert ai_service.archive_insight_called is True
+    assert ai_service.received_events is not None
+    assert [event.id for event in ai_service.received_events] == [recent_event.id]
+    assert ai_service.received_analysis is not None
+    assert ai_service.received_analysis.period_days == 7
+    assert ai_service.received_analysis.event_count == 2
+    assert ai_service.received_analysis.active_30d_count == 2
+    assert ai_service.received_analysis.active_period_count == 1
+    assert ai_service.received_analysis.main_sources == ["噪音冲突"]
+
+
+def test_archive_insight_defaults_to_30_days_for_ai_service_events():
+    event_store = InMemoryEventStore()
+    ai_service = CapturingArchiveInsightService()
+    app.dependency_overrides[get_event_store] = lambda: event_store
+    app.dependency_overrides[get_ai_service] = lambda: ai_service
+    today = date.today()
+    recent_event = event_store.add(
+        EventRecordCreate(
+            event_date=today,
+            event_type="noise",
+            severity=2,
+            frequency="occasional",
+            emotion="helpless",
+            has_communicated=True,
+            has_conflict=False,
+            description="今天公共桌面偶尔有点乱，已经提醒过一次。",
+        )
+    )
+    event_store.add(
+        EventRecordCreate(
+            event_date=today - timedelta(days=30),
+            event_type="hygiene",
+            severity=5,
+            frequency="daily",
+            emotion="angry",
+            has_communicated=False,
+            has_conflict=True,
+            description="30 天前公共区域长期没人整理，已经争吵。",
+        )
+    )
+
+    response = client.post("/api/events/insight")
+
+    assert response.status_code == 200
+    assert ai_service.archive_insight_called is True
+    assert ai_service.received_events is not None
+    assert [event.id for event in ai_service.received_events] == [recent_event.id]
+    assert ai_service.received_analysis is not None
+    assert ai_service.received_analysis.period_days == 30
+    assert ai_service.received_analysis.event_count == 2
+    assert ai_service.received_analysis.active_30d_count == 2
+    assert ai_service.received_analysis.active_period_count == 1
+    assert ai_service.received_analysis.main_sources == ["噪音冲突"]
+
+
+def test_archive_insight_range_7_returns_400_when_current_period_is_empty():
+    event_store = InMemoryEventStore()
+    ai_service = CapturingArchiveInsightService()
+    app.dependency_overrides[get_event_store] = lambda: event_store
+    app.dependency_overrides[get_ai_service] = lambda: ai_service
+    today = date.today()
+    event_store.add(
+        EventRecordCreate(
+            event_date=today - timedelta(days=8),
+            event_type="noise",
+            severity=4,
+            frequency="weekly_multiple",
+            emotion="anxious",
+            has_communicated=False,
+            has_conflict=True,
+            description="8 天前舍友晚上打游戏声音很大，影响睡眠。",
+        )
+    )
+
+    response = client.post("/api/events/insight?range_days=7")
+
+    assert response.status_code == 400
+    assert "当前周期内暂无事件，无法生成 AI 心晴见解" in response.json()["detail"]
+    assert ai_service.archive_insight_called is False
+
+
+def test_archive_insight_endpoint_rejects_invalid_range_days():
+    event_store = InMemoryEventStore()
+    ai_service = CapturingArchiveInsightService()
+    app.dependency_overrides[get_event_store] = lambda: event_store
+    app.dependency_overrides[get_ai_service] = lambda: ai_service
+    event_store.add(
+        EventRecordCreate(
+            event_date=date.today(),
+            event_type="noise",
+            severity=4,
+            frequency="weekly_multiple",
+            emotion="anxious",
+            has_communicated=False,
+            has_conflict=True,
+            description="舍友晚上打游戏声音很大，影响睡眠。",
+        )
+    )
+
+    response = client.post("/api/events/insight?range_days=14")
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "range_days must be one of 7, 15, 30, 90"
     assert ai_service.archive_insight_called is False
 
 
