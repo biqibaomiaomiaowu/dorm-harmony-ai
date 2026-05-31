@@ -7,6 +7,7 @@ import {
   normalizeRoommates,
   submitSimulationStreamRequest,
   type AnalyzeRiskLevel,
+  type RehearsalSourceMeta,
   type ReviewDialogueLine,
   type RoommateProfile,
   type RoommateTraits,
@@ -26,6 +27,7 @@ export interface UseSimulationSessionOptions {
   getRiskLevel: () => AnalyzeRiskLevel | undefined
   getContext: () => string
   getUseEventArchive: () => boolean
+  getSourceMeta?: () => RehearsalSourceMeta | undefined
 }
 
 export interface ResetConversationOptions {
@@ -35,6 +37,7 @@ export interface ResetConversationOptions {
 export interface SimulationCacheHydration {
   scenario?: string
   userMessage?: string
+  sourceMeta?: RehearsalSourceMeta
 }
 
 const defaultReplyChainMin = 3
@@ -57,6 +60,42 @@ function isReviewDialogueLine(value: unknown): value is ReviewDialogueLine {
   )
 }
 
+function hasStringFields(value: RecordLike, fields: string[]) {
+  return fields.every((field) => typeof value[field] === 'string')
+}
+
+function isRehearsalSourceMeta(value: unknown): value is RehearsalSourceMeta {
+  if (!isRecord(value) || typeof value.mode !== 'string') {
+    return false
+  }
+
+  if (value.mode === 'scenario_training') {
+    return (
+      hasStringFields(value, [
+        'category_id',
+        'category_label',
+        'scenario_id',
+        'scenario_title',
+        'target_id',
+        'target_label',
+        'difficulty_id',
+        'difficulty_label',
+      ]) &&
+      (typeof value.difficulty_description === 'undefined' ||
+        typeof value.difficulty_description === 'string')
+    )
+  }
+
+  if (value.mode === 'custom_rehearsal') {
+    return (
+      typeof value.scenario === 'string' &&
+      (typeof value.roommate_summary === 'undefined' || typeof value.roommate_summary === 'string')
+    )
+  }
+
+  return false
+}
+
 function isStoredSimulationResult(value: unknown): value is StoredSimulationResult {
   if (!isRecord(value)) {
     return false
@@ -66,7 +105,7 @@ function isStoredSimulationResult(value: unknown): value is StoredSimulationResu
   const response = value.response
   const dialogue = value.dialogue
 
-  return (
+  const hasValidSimulationShape =
     isRecord(request) &&
     typeof request.scenario === 'string' &&
     (typeof request.user_message === 'undefined' || typeof request.user_message === 'string') &&
@@ -75,7 +114,16 @@ function isStoredSimulationResult(value: unknown): value is StoredSimulationResu
     typeof response.safety_note === 'string' &&
     (typeof dialogue === 'undefined' ||
       (Array.isArray(dialogue) && dialogue.every(isReviewDialogueLine)))
-  )
+
+  if (!hasValidSimulationShape) {
+    return false
+  }
+
+  if (typeof value.source_meta !== 'undefined' && !isRehearsalSourceMeta(value.source_meta)) {
+    delete value.source_meta
+  }
+
+  return true
 }
 
 function cloneTraits(traits: RoommateTraits): RoommateTraits {
@@ -143,12 +191,12 @@ export function useSimulationSession(options: UseSimulationSessionOptions) {
   const canEnterReview = computed(() =>
     Boolean(
       conversationId.value &&
-        hasUserTurn.value &&
-        hasCompleteSimulationTurn.value &&
-        !isDemoResult.value &&
-        !isSubmitting.value &&
-        queuedUserMessages.value.length === 0 &&
-        sessionErrorState.value !== 'expired',
+      hasUserTurn.value &&
+      hasCompleteSimulationTurn.value &&
+      !isDemoResult.value &&
+      !isSubmitting.value &&
+      queuedUserMessages.value.length === 0 &&
+      sessionErrorState.value !== 'expired',
     ),
   )
 
@@ -275,6 +323,7 @@ export function useSimulationSession(options: UseSimulationSessionOptions) {
       return {
         scenario: parsed.request.scenario || undefined,
         userMessage: userMessage.value,
+        sourceMeta: parsed.source_meta,
       }
     } catch {
       return {}
@@ -377,6 +426,7 @@ export function useSimulationSession(options: UseSimulationSessionOptions) {
           },
           response,
           dialogue: conversationMessages.value,
+          source_meta: options.getSourceMeta?.(),
         }),
       )
     } catch {
