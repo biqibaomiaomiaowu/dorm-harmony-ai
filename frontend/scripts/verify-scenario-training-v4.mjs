@@ -172,12 +172,14 @@ function verifyScenarioUiMeta(catalog, uiMeta) {
   for (const scenario of catalog.trainingScenarios) {
     const meta = uiMeta.getTrainingScenarioUiMeta(scenario.id)
     assert.ok(meta, `${scenario.id} should have UI metadata`)
+    assert.equal(meta.scenario_id, scenario.id, `${scenario.id} scenario id`)
     assert.equal(typeof meta.headline, 'string', `${scenario.id} headline`)
     assert.equal(typeof meta.resistance, 'string', `${scenario.id} resistance`)
     assert.equal(typeof meta.focus, 'string', `${scenario.id} focus`)
     assert.ok(Array.isArray(meta.suggested_target_ids), `${scenario.id} target suggestions`)
     assert.ok(Array.isArray(meta.suggested_difficulty_ids), `${scenario.id} difficulty suggestions`)
-    assert.ok(['low', 'medium', 'high'].includes(meta.complexity), `${scenario.id} complexity`)
+    assert.ok(Number.isInteger(meta.complexity), `${scenario.id} complexity should be integer`)
+    assert.ok(meta.complexity >= 1 && meta.complexity <= 5, `${scenario.id} complexity`)
     assert.ok(Array.isArray(meta.tags) && meta.tags.length > 0, `${scenario.id} tags`)
   }
 }
