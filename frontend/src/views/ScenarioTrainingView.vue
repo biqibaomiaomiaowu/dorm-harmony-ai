@@ -4,6 +4,11 @@ import { RouterLink, useRoute } from 'vue-router'
 
 import { useSimulationSession } from '@/composables/useSimulationSession'
 import {
+  buildScenarioDifficultyContext,
+  buildScenarioTrainingRoommates,
+  getScenarioReplyPolicy,
+} from '@/data/scenarioDifficultyPolicy'
+import {
   buildOpeningSuggestion,
   buildScenarioTrainingSourceMeta,
   getTrainingCategory,
@@ -21,7 +26,6 @@ import {
   type TrainingTargetId,
 } from '@/data/trainingCatalog'
 import {
-  createDefaultRoommates,
   roommateAvatarOptions,
   type ReviewDialogueLine,
   type RoommateAvatarKey,
@@ -54,6 +58,7 @@ const trainingSteps: Array<{ id: TrainingStep; label: string }> = [
   { id: 'chat', label: '聊天' },
 ]
 const defaultStep: TrainingStep = 'category'
+const trainingOpeningContextMaxLength = 120
 const rehearsalSafetyCopy =
   '场景演练只用于练习表达，不代表真实舍友想法；如果冲突升级或压力明显影响生活，请及时联系辅导员、宿管、心理老师等现实支持。'
 const analysisSafetyCopy =
@@ -69,7 +74,6 @@ const openingMessage = ref('')
 const openingTouched = ref(false)
 const sourceFrom = ref('')
 const hasMounted = ref(false)
-const trainingRoommates = createDefaultRoommates()
 
 const selectedCategory = computed(() => getTrainingCategory(categoryId.value))
 const selectedScenario = computed(() => {
@@ -78,6 +82,9 @@ const selectedScenario = computed(() => {
 })
 const selectedTarget = computed(() => getTrainingTarget(targetId.value))
 const selectedDifficulty = computed(() => getTrainingDifficulty(difficultyId.value))
+const trainingRoommates = computed(() =>
+  buildScenarioTrainingRoommates(selectedDifficulty.value?.id),
+)
 const scenarioOptions = computed(() => scenariosForCategory(categoryId.value))
 const trainingSelection = computed<Partial<TrainingSelection>>(() => ({
   category_id: selectedCategory.value?.id,
@@ -120,6 +127,10 @@ const trainingSummary = computed(() => [
       ? `${selectedDifficulty.value.label}：${selectedDifficulty.value.description}`
       : '未选择',
   },
+  {
+    label: '虚拟舍友数',
+    value: selectedDifficulty.value ? `${trainingRoommates.value.length} 位` : '待选择',
+  },
 ])
 
 const {
@@ -142,11 +153,12 @@ const {
   hydrateFromSimulationCache,
 } = useSimulationSession({
   getScenario: () => selectedScenario.value?.title ?? '场景训练',
-  getRoommates: () => trainingRoommates,
+  getRoommates: () => trainingRoommates.value,
   getRiskLevel: () => undefined,
   getUseEventArchive: () => false,
   getContext: () => buildTrainingContext(),
   getSourceMeta: () => sourceMeta.value,
+  getReplyChainTargetRange: () => getScenarioReplyPolicy(selectedDifficulty.value?.id),
 })
 
 function isRecord(value: unknown): value is RecordLike {
@@ -169,6 +181,16 @@ function normalizeSourceFrom(value: string) {
   return value.trim().slice(0, 32)
 }
 
+function summarizeTrainingContextValue(value: string, maxLength: number) {
+  const normalizedValue = value.replace(/\s+/g, ' ').trim()
+
+  if (normalizedValue.length <= maxLength) {
+    return normalizedValue
+  }
+
+  return `${normalizedValue.slice(0, Math.max(0, maxLength - 1))}…`
+}
+
 function buildTrainingContext() {
   const parts = [
     '当前模式：场景训练',
@@ -180,9 +202,15 @@ function buildTrainingContext() {
 
   if (selectedDifficulty.value?.description) {
     parts.push(`难度说明：${selectedDifficulty.value.description}`)
+    parts.push(buildScenarioDifficultyContext(selectedDifficulty.value.id))
   }
 
-  parts.push(`开场白：${openingMessage.value.trim() || '用户尚未填写'}`)
+  parts.push(
+    `开场白摘要：${summarizeTrainingContextValue(
+      openingMessage.value.trim() || '用户尚未填写',
+      trainingOpeningContextMaxLength,
+    )}`,
+  )
 
   return parts.join('；')
 }
@@ -505,14 +533,14 @@ function speakerLabel(speaker: ReviewDialogueLine['speaker']) {
 
   const roommate =
     cachedConversationRoommates.value.find((item) => item.id === speaker) ??
-    trainingRoommates.find((item) => item.id === speaker)
+    trainingRoommates.value.find((item) => item.id === speaker)
   return roommate?.name ?? speaker.replace('roommate_', '舍友 ')
 }
 
 function roommateForSpeaker(speaker: ReviewDialogueLine['speaker']) {
   return speaker.startsWith('roommate_')
     ? (cachedConversationRoommates.value.find((item) => item.id === speaker) ??
-        trainingRoommates.find((item) => item.id === speaker))
+        trainingRoommates.value.find((item) => item.id === speaker))
     : undefined
 }
 
@@ -610,288 +638,296 @@ watch(
       {{ shouldShowRealitySupport ? analysisSafetyCopy : rehearsalSafetyCopy }}
     </p>
 
-    <section v-if="currentStep !== 'chat'" class="scenario-training-workspace">
-      <section class="scenario-step-card card-border pop-card pop-shadow">
-        <template v-if="currentStep === 'category'">
-          <p class="eyebrow pill-label">Step 1</p>
-          <h2>选择场景分类</h2>
-          <div class="scenario-option-grid">
-            <button
-              v-for="category in trainingCategories"
-              :key="category.id"
-              type="button"
-              class="scenario-option-btn pop-shadow"
-              :class="{ active: selectedCategory?.id === category.id }"
-              @click="selectCategory(category.id)"
-            >
-              <span class="material-symbol" aria-hidden="true">category</span>
-              {{ category.label }}
-            </button>
-          </div>
-        </template>
+    <Transition name="scenario-stage-fade" mode="out-in">
+      <section v-if="currentStep !== 'chat'" key="steps" class="scenario-training-workspace">
+        <Transition name="scenario-step-slide" mode="out-in">
+          <section :key="currentStep" class="scenario-step-card card-border pop-card pop-shadow">
+            <template v-if="currentStep === 'category'">
+              <p class="eyebrow pill-label">Step 1</p>
+              <h2>选择场景分类</h2>
+              <div class="scenario-option-grid">
+                <button
+                  v-for="category in trainingCategories"
+                  :key="category.id"
+                  type="button"
+                  class="scenario-option-btn pop-shadow"
+                  :class="{ active: selectedCategory?.id === category.id }"
+                  @click="selectCategory(category.id)"
+                >
+                  <span class="material-symbol" aria-hidden="true">category</span>
+                  {{ category.label }}
+                </button>
+              </div>
+            </template>
 
-        <template v-else-if="currentStep === 'scenario'">
-          <p class="eyebrow pill-label">Step 2</p>
-          <h2>选择具体场景</h2>
-          <p class="scenario-step-copy">
-            当前分类：{{ selectedCategory?.label ?? '请先选择分类' }}
-          </p>
-          <div class="scenario-option-grid">
-            <button
-              v-for="scenario in scenarioOptions"
-              :key="scenario.id"
-              type="button"
-              class="scenario-option-btn pop-shadow"
-              :class="{ active: selectedScenario?.id === scenario.id }"
-              @click="selectScenario(scenario.id)"
-            >
-              <span class="material-symbol" aria-hidden="true">sms</span>
-              {{ scenario.title }}
-            </button>
-          </div>
-        </template>
+            <template v-else-if="currentStep === 'scenario'">
+              <p class="eyebrow pill-label">Step 2</p>
+              <h2>选择具体场景</h2>
+              <p class="scenario-step-copy">
+                当前分类：{{ selectedCategory?.label ?? '请先选择分类' }}
+              </p>
+              <div class="scenario-option-grid">
+                <button
+                  v-for="scenario in scenarioOptions"
+                  :key="scenario.id"
+                  type="button"
+                  class="scenario-option-btn pop-shadow"
+                  :class="{ active: selectedScenario?.id === scenario.id }"
+                  @click="selectScenario(scenario.id)"
+                >
+                  <span class="material-symbol" aria-hidden="true">sms</span>
+                  {{ scenario.title }}
+                </button>
+              </div>
+            </template>
 
-        <template v-else-if="currentStep === 'target'">
-          <p class="eyebrow pill-label">Step 3</p>
-          <h2>选择训练目标</h2>
-          <div class="scenario-option-grid">
-            <button
-              v-for="target in trainingTargets"
-              :key="target.id"
-              type="button"
-              class="scenario-option-btn pop-shadow"
-              :class="{ active: selectedTarget?.id === target.id }"
-              @click="selectTarget(target.id)"
-            >
-              <span class="material-symbol" aria-hidden="true">flag</span>
-              {{ target.label }}
-            </button>
-          </div>
-        </template>
+            <template v-else-if="currentStep === 'target'">
+              <p class="eyebrow pill-label">Step 3</p>
+              <h2>选择训练目标</h2>
+              <div class="scenario-option-grid">
+                <button
+                  v-for="target in trainingTargets"
+                  :key="target.id"
+                  type="button"
+                  class="scenario-option-btn pop-shadow"
+                  :class="{ active: selectedTarget?.id === target.id }"
+                  @click="selectTarget(target.id)"
+                >
+                  <span class="material-symbol" aria-hidden="true">flag</span>
+                  {{ target.label }}
+                </button>
+              </div>
+            </template>
 
-        <template v-else-if="currentStep === 'difficulty'">
-          <p class="eyebrow pill-label">Step 4</p>
-          <h2>选择训练难度</h2>
-          <div class="scenario-difficulty-list">
-            <button
-              v-for="difficulty in trainingDifficulties"
-              :key="difficulty.id"
-              type="button"
-              class="scenario-difficulty-btn pop-shadow"
-              :class="{ active: selectedDifficulty?.id === difficulty.id }"
-              @click="selectDifficulty(difficulty.id)"
-            >
-              <strong>{{ difficulty.label }}</strong>
-              <span>{{ difficulty.description }}</span>
-            </button>
-          </div>
-        </template>
+            <template v-else-if="currentStep === 'difficulty'">
+              <p class="eyebrow pill-label">Step 4</p>
+              <h2>选择训练难度</h2>
+              <div class="scenario-difficulty-list">
+                <button
+                  v-for="difficulty in trainingDifficulties"
+                  :key="difficulty.id"
+                  type="button"
+                  class="scenario-difficulty-btn pop-shadow"
+                  :class="{ active: selectedDifficulty?.id === difficulty.id }"
+                  @click="selectDifficulty(difficulty.id)"
+                >
+                  <strong>{{ difficulty.label }}</strong>
+                  <span>{{ difficulty.description }}</span>
+                </button>
+              </div>
+            </template>
 
-        <template v-else>
-          <p class="eyebrow pill-label">Step 5</p>
-          <h2>准备开场白</h2>
-          <p class="scenario-step-copy">这里的内容会预填到聊天输入框，进入对话后仍可修改。</p>
-          <label class="scenario-opening-field">
-            <span>开场白</span>
-            <textarea
-              v-model="openingMessage"
-              rows="5"
-              maxlength="280"
-              placeholder="写下你准备先说出口的一句话"
-              @input="markOpeningTouched"
-            ></textarea>
-          </label>
-          <article v-if="openingSuggestion" class="scenario-suggestion card-border">
-            <span class="material-symbol" aria-hidden="true">tips_and_updates</span>
-            <p>{{ openingSuggestion }}</p>
-            <button class="secondary-action pop-shadow" type="button" @click="useCurrentSuggestion">
-              套用建议
-            </button>
-          </article>
-          <div class="scenario-step-actions">
-            <button
-              class="secondary-action pop-shadow"
-              type="button"
-              @click="goToStep('difficulty')"
-            >
-              返回难度
-            </button>
-            <button
-              class="primary-action pop-shadow"
-              type="button"
-              :disabled="!canEnterChat"
-              @click="enterChat"
-            >
-              进入聊天
-              <span class="material-symbol" aria-hidden="true">arrow_forward</span>
-            </button>
-          </div>
-        </template>
-      </section>
-
-      <aside class="scenario-summary-panel card-border pop-card">
-        <h2>当前训练</h2>
-        <dl>
-          <div v-for="item in trainingSummary" :key="item.label">
-            <dt>{{ item.label }}</dt>
-            <dd>{{ item.value }}</dd>
-          </div>
-        </dl>
-      </aside>
-    </section>
-
-    <section v-else class="scenario-chat-stage">
-      <section class="scenario-chat-summary card-border pop-card pop-shadow">
-        <div v-for="item in trainingSummary" :key="item.label" class="scenario-chat-summary-item">
-          <span>{{ item.label }}</span>
-          <strong>{{ item.value }}</strong>
-        </div>
-      </section>
-
-      <section class="chat-panel card-border pop-card">
-        <header class="chat-header card-border">
-          <div class="chat-title chat-title-row">
-            <span class="material-symbol" aria-hidden="true">chat</span>
-            <h2>场景训练对话</h2>
-          </div>
-          <button class="primary-action pop-shadow" type="button" @click="resetTraining">
-            <span class="material-symbol" aria-hidden="true">refresh</span>
-            重置
-          </button>
-        </header>
-
-        <div class="chat-content">
-          <p class="chat-system card-border">
-            当前场景：{{ selectedScenario?.title ?? '场景训练' }}。先发送或修改你的开场白。
-          </p>
-
-          <Transition name="chat-state">
-            <section
-              v-if="sessionErrorState === 'expired'"
-              class="simulation-session-error pop-card pop-shadow"
-            >
-              <span class="material-symbol" aria-hidden="true">sync_problem</span>
-              <h2>会话已失效</h2>
-              <p>当前会话无法继续，请重新开始后再发送。</p>
-              <button
-                class="primary-action pop-shadow"
-                type="button"
-                @click="retryFromExpiredSession(userMessage)"
-              >
-                重新开始
-              </button>
-            </section>
-          </Transition>
-
-          <Transition name="chat-state" mode="out-in">
-            <TransitionGroup
-              v-if="conversationMessages.length > 0"
-              key="thread"
-              name="chat-message"
-              tag="div"
-              class="conversation-thread"
-            >
-              <article
-                v-for="(line, index) in conversationMessages"
-                :key="`${line.speaker}-${index}-${line.message}`"
-                :class="['conversation-message', messageClass(line.speaker)]"
-              >
-                <div class="conversation-message-heading">
-                  <span
-                    v-if="speakerAvatarKey(line.speaker)"
-                    :class="[
-                      'conversation-message-avatar',
-                      `roommate-avatar-${speakerAvatarKey(line.speaker)}`,
-                    ]"
-                    aria-hidden="true"
-                  >
-                    {{ speakerAvatarShortLabel(line.speaker) }}
-                  </span>
-                  <span>{{ speakerLabel(line.speaker) }}</span>
-                </div>
-                <p>{{ line.message }}</p>
+            <template v-else>
+              <p class="eyebrow pill-label">Step 5</p>
+              <h2>准备开场白</h2>
+              <p class="scenario-step-copy">这里的内容会预填到聊天输入框，进入对话后仍可修改。</p>
+              <label class="scenario-opening-field">
+                <span>开场白</span>
+                <textarea
+                  v-model="openingMessage"
+                  rows="5"
+                  maxlength="280"
+                  placeholder="写下你准备先说出口的一句话"
+                  @input="markOpeningTouched"
+                ></textarea>
+              </label>
+              <article v-if="openingSuggestion" class="scenario-suggestion card-border">
+                <span class="material-symbol" aria-hidden="true">tips_and_updates</span>
+                <p>{{ openingSuggestion }}</p>
+                <button
+                  class="secondary-action pop-shadow"
+                  type="button"
+                  @click="useCurrentSuggestion"
+                >
+                  套用建议
+                </button>
               </article>
-              <article
-                v-if="systemTurnNotice"
-                key="system-turn-notice"
-                class="conversation-message conversation-message-system"
-              >
-                <span>系统</span>
-                <p>{{ systemTurnNotice }}</p>
-              </article>
-              <article
-                v-if="isSubmitting"
-                key="typing"
-                class="conversation-message conversation-message-roommate"
-              >
-                <span>{{ generationStatus || '正在生成舍友回复...' }}</span>
-                <p class="typing-indicator" aria-live="polite">
-                  <i></i>
-                  <i></i>
-                  <i></i>
-                </p>
-              </article>
-            </TransitionGroup>
+              <div class="scenario-step-actions">
+                <button
+                  class="secondary-action pop-shadow"
+                  type="button"
+                  @click="goToStep('difficulty')"
+                >
+                  返回难度
+                </button>
+                <button
+                  class="primary-action pop-shadow"
+                  type="button"
+                  :disabled="!canEnterChat"
+                  @click="enterChat"
+                >
+                  进入聊天
+                  <span class="material-symbol" aria-hidden="true">arrow_forward</span>
+                </button>
+              </div>
+            </template>
+          </section>
+        </Transition>
 
-            <div v-else key="preview" class="chat-preview-state">
-              <article class="chat-user" :class="{ 'chat-user-empty': !hasUserMessage }">
-                <div class="chat-avatar roommate-avatar-letter" aria-hidden="true">你</div>
-                <p class="chat-bubble chat-bubble-user pop-shadow">
-                  {{ userMessage || openingMessage || '进入聊天后，先写一句你准备说出口的话' }}
-                </p>
-              </article>
+        <aside class="scenario-summary-panel card-border pop-card">
+          <h2>当前训练</h2>
+          <dl>
+            <div v-for="item in trainingSummary" :key="item.label">
+              <dt>{{ item.label }}</dt>
+              <dd>{{ item.value }}</dd>
             </div>
-          </Transition>
+          </dl>
+        </aside>
+      </section>
 
-          <div class="chat-hint card-border pop-card">
-            <p class="chat-hint-label">
-              <span class="material-symbol" aria-hidden="true">tips_and_updates</span>
-              建议先表达感受，再提出具体请求。
-            </p>
-            <p>{{ chatHintMessage }}</p>
+      <section v-else key="chat" class="scenario-chat-stage">
+        <section class="scenario-chat-summary card-border pop-card pop-shadow">
+          <div v-for="item in trainingSummary" :key="item.label" class="scenario-chat-summary-item">
+            <span>{{ item.label }}</span>
+            <strong>{{ item.value }}</strong>
           </div>
+        </section>
 
-          <div class="chat-footer-note card-border pop-card">
-            <p>{{ safetyNote || rehearsalSafetyCopy }}</p>
-          </div>
-        </div>
-
-        <form class="simulation-input-bar card-border" @submit.prevent="sendMessage">
-          <div class="comm-input-wrap">
-            <input
-              v-model="userMessage"
-              type="text"
-              placeholder="输入或调整你的开场白"
-              aria-label="输入你的回复"
-            />
-            <button class="microphone-btn" type="button" aria-label="麦克风">
-              <span class="material-symbol" aria-hidden="true">mic</span>
+        <section class="chat-panel card-border pop-card">
+          <header class="chat-header card-border">
+            <div class="chat-title chat-title-row">
+              <span class="material-symbol" aria-hidden="true">chat</span>
+              <h2>场景训练对话</h2>
+            </div>
+            <button class="primary-action pop-shadow" type="button" @click="resetTraining">
+              <span class="material-symbol" aria-hidden="true">refresh</span>
+              重置
             </button>
+          </header>
+
+          <div class="chat-content">
+            <p class="chat-system card-border">
+              当前场景：{{ selectedScenario?.title ?? '场景训练' }}。先发送或修改你的开场白。
+            </p>
+
+            <Transition name="chat-state">
+              <section
+                v-if="sessionErrorState === 'expired'"
+                class="simulation-session-error pop-card pop-shadow"
+              >
+                <span class="material-symbol" aria-hidden="true">sync_problem</span>
+                <h2>会话已失效</h2>
+                <p>当前会话无法继续，请重新开始后再发送。</p>
+                <button
+                  class="primary-action pop-shadow"
+                  type="button"
+                  @click="retryFromExpiredSession(userMessage)"
+                >
+                  重新开始
+                </button>
+              </section>
+            </Transition>
+
+            <Transition name="chat-state" mode="out-in">
+              <TransitionGroup
+                v-if="conversationMessages.length > 0"
+                key="thread"
+                name="chat-message"
+                tag="div"
+                class="conversation-thread"
+              >
+                <article
+                  v-for="(line, index) in conversationMessages"
+                  :key="`${line.speaker}-${index}-${line.message}`"
+                  :class="['conversation-message', messageClass(line.speaker)]"
+                >
+                  <div class="conversation-message-heading">
+                    <span
+                      v-if="speakerAvatarKey(line.speaker)"
+                      :class="[
+                        'conversation-message-avatar',
+                        `roommate-avatar-${speakerAvatarKey(line.speaker)}`,
+                      ]"
+                      aria-hidden="true"
+                    >
+                      {{ speakerAvatarShortLabel(line.speaker) }}
+                    </span>
+                    <span>{{ speakerLabel(line.speaker) }}</span>
+                  </div>
+                  <p>{{ line.message }}</p>
+                </article>
+                <article
+                  v-if="systemTurnNotice"
+                  key="system-turn-notice"
+                  class="conversation-message conversation-message-system"
+                >
+                  <span>系统</span>
+                  <p>{{ systemTurnNotice }}</p>
+                </article>
+                <article
+                  v-if="isSubmitting"
+                  key="typing"
+                  class="conversation-message conversation-message-roommate"
+                >
+                  <span>{{ generationStatus || '正在生成舍友回复...' }}</span>
+                  <p class="typing-indicator" aria-live="polite">
+                    <i></i>
+                    <i></i>
+                    <i></i>
+                  </p>
+                </article>
+              </TransitionGroup>
+
+              <div v-else key="preview" class="chat-preview-state">
+                <article class="chat-user" :class="{ 'chat-user-empty': !hasUserMessage }">
+                  <div class="chat-avatar roommate-avatar-letter" aria-hidden="true">你</div>
+                  <p class="chat-bubble chat-bubble-user pop-shadow">
+                    {{ userMessage || openingMessage || '进入聊天后，先写一句你准备说出口的话' }}
+                  </p>
+                </article>
+              </div>
+            </Transition>
+
+            <div class="chat-hint card-border pop-card">
+              <p class="chat-hint-label">
+                <span class="material-symbol" aria-hidden="true">tips_and_updates</span>
+                建议先表达感受，再提出具体请求。
+              </p>
+              <p>{{ chatHintMessage }}</p>
+            </div>
+
+            <div class="chat-footer-note card-border pop-card">
+              <p>{{ safetyNote || rehearsalSafetyCopy }}</p>
+            </div>
           </div>
-          <button class="primary-action pop-shadow" type="submit" :disabled="!hasUserMessage">
-            <span v-if="isSubmitting">排队发送</span>
-            <span v-else>发送</span>
-            <span class="material-symbol" aria-hidden="true">send</span>
+
+          <form class="simulation-input-bar card-border" @submit.prevent="sendMessage">
+            <div class="comm-input-wrap">
+              <input
+                v-model="userMessage"
+                type="text"
+                placeholder="输入或调整你的开场白"
+                aria-label="输入你的回复"
+              />
+              <button class="microphone-btn" type="button" aria-label="麦克风">
+                <span class="material-symbol" aria-hidden="true">mic</span>
+              </button>
+            </div>
+            <button class="primary-action pop-shadow" type="submit" :disabled="!hasUserMessage">
+              <span v-if="isSubmitting">排队发送</span>
+              <span v-else>发送</span>
+              <span class="material-symbol" aria-hidden="true">send</span>
+            </button>
+          </form>
+
+          <p v-if="submitError" class="error-text">{{ submitError }}</p>
+        </section>
+
+        <section class="simulation-end-bar">
+          <RouterLink
+            v-if="canEnterReview"
+            class="secondary-action pop-shadow"
+            :to="{ name: 'review' }"
+          >
+            生成复盘报告
+          </RouterLink>
+          <button v-else class="secondary-action pop-shadow" type="button" disabled>
+            生成复盘报告
           </button>
-        </form>
-
-        <p v-if="submitError" class="error-text">{{ submitError }}</p>
+          <p class="simulation-meta">{{ reviewGateMessage }}</p>
+        </section>
       </section>
-
-      <section class="simulation-end-bar">
-        <RouterLink
-          v-if="canEnterReview"
-          class="secondary-action pop-shadow"
-          :to="{ name: 'review' }"
-        >
-          生成复盘报告
-        </RouterLink>
-        <button v-else class="secondary-action pop-shadow" type="button" disabled>
-          生成复盘报告
-        </button>
-        <p class="simulation-meta">{{ reviewGateMessage }}</p>
-      </section>
-    </section>
+    </Transition>
   </main>
 </template>
 
@@ -979,6 +1015,7 @@ watch(
   grid-template-columns: minmax(0, 1fr) minmax(260px, 0.34fr);
   gap: 16px;
   align-items: start;
+  min-width: 0;
 }
 
 .scenario-step-card,
@@ -987,6 +1024,39 @@ watch(
   gap: 16px;
   background: var(--card);
   padding: 22px;
+  min-width: 0;
+}
+
+.scenario-step-slide-enter-active,
+.scenario-step-slide-leave-active {
+  transition:
+    opacity 220ms ease,
+    transform 220ms ease;
+  transform-origin: top center;
+}
+
+.scenario-step-slide-enter-from {
+  opacity: 0;
+  transform: translateY(12px) scale(0.985);
+}
+
+.scenario-step-slide-leave-to {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.99);
+}
+
+.scenario-stage-fade-enter-active,
+.scenario-stage-fade-leave-active {
+  transition:
+    opacity 240ms ease,
+    transform 240ms ease;
+  transform-origin: top center;
+}
+
+.scenario-stage-fade-enter-from,
+.scenario-stage-fade-leave-to {
+  opacity: 0;
+  transform: translateY(10px) scale(0.99);
 }
 
 .scenario-step-card h2,
@@ -1128,11 +1198,12 @@ watch(
 .scenario-chat-stage {
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .scenario-chat-summary {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
   background: var(--surface-low);
   padding: 14px;

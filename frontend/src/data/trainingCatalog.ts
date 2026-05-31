@@ -87,10 +87,10 @@ export const trainingTargets: TrainingTarget[] = [
 ]
 
 export const trainingDifficulties: TrainingDifficulty[] = [
-  { id: 'beginner', label: '初级', description: '舍友较温和，适合第一次练习' },
-  { id: 'intermediate', label: '中级', description: '舍友会解释或轻微反驳' },
-  { id: 'advanced', label: '高级', description: '舍友可能回避、质疑或推卸' },
-  { id: 'challenge', label: '挑战', description: '多个舍友参与，场面更复杂' },
+  { id: 'beginner', label: '初级', description: '1 位温和舍友，愿意听你说，反驳较弱' },
+  { id: 'intermediate', label: '中级', description: '2 位舍友，一位解释，一位轻微反驳' },
+  { id: 'advanced', label: '高级', description: '3 位舍友，直接、回避和边界/推卸反应更明显' },
+  { id: 'challenge', label: '挑战', description: '4-5 位舍友，多人质疑、回避、推卸与调停交织' },
 ]
 
 const scenarioRequestDirections: Record<TrainingScenarioId, string> = {
@@ -139,9 +139,7 @@ export function scenariosForCategory(categoryId: string | undefined): TrainingSc
   return trainingScenarios.filter((scenario) => scenario.category_id === categoryId)
 }
 
-export function buildOpeningSuggestion(
-  selection: Partial<TrainingSelection>,
-): string | undefined {
+export function buildOpeningSuggestion(selection: Partial<TrainingSelection>): string | undefined {
   const category = getTrainingCategory(selection.category_id)
   const scenario = getTrainingScenario(selection.scenario_id)
   const target = getTrainingTarget(selection.target_id)
@@ -181,5 +179,6 @@ export function buildScenarioTrainingSourceMeta(
     target_label: target.label,
     difficulty_id: difficulty.id,
     difficulty_label: difficulty.label,
+    difficulty_description: difficulty.description,
   }
 }

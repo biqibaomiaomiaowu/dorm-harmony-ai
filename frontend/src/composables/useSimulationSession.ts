@@ -21,6 +21,11 @@ type RecordLike = Record<string, unknown>
 
 export type SimulationSessionErrorState = '' | 'expired'
 
+export interface ReplyChainTargetRange {
+  min: number
+  max: number
+}
+
 export interface UseSimulationSessionOptions {
   getScenario: () => string
   getRoommates: () => RoommateProfile[]
@@ -28,6 +33,7 @@ export interface UseSimulationSessionOptions {
   getContext: () => string
   getUseEventArchive: () => boolean
   getSourceMeta?: () => RehearsalSourceMeta | undefined
+  getReplyChainTargetRange?: () => ReplyChainTargetRange
 }
 
 export interface ResetConversationOptions {
@@ -43,6 +49,9 @@ export interface SimulationCacheHydration {
 const defaultReplyChainMin = 3
 const defaultReplyChainMax = 7
 const maxReplyChainLength = 15
+const simulationContextMaxLength = 500
+const contextTruncationSuffix = '…'
+const contextSeparator = '；'
 const interjectionWindowMs = 900
 
 function isRecord(value: unknown): value is RecordLike {
@@ -141,9 +150,84 @@ function createTurnId() {
   return `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-function createReplyChainTarget() {
-  const span = defaultReplyChainMax - defaultReplyChainMin + 1
-  return defaultReplyChainMin + Math.floor(Math.random() * span)
+function normalizeReplyChainTargetRange(
+  range: ReplyChainTargetRange | undefined,
+): ReplyChainTargetRange {
+  const rawMin = Number(range?.min ?? defaultReplyChainMin)
+  const rawMax = Number(range?.max ?? defaultReplyChainMax)
+  const min = Number.isFinite(rawMin)
+    ? Math.max(1, Math.min(maxReplyChainLength, Math.round(rawMin)))
+    : defaultReplyChainMin
+  const max = Number.isFinite(rawMax)
+    ? Math.max(min, Math.min(maxReplyChainLength, Math.round(rawMax)))
+    : Math.max(min, defaultReplyChainMax)
+
+  return { min, max }
+}
+
+function createReplyChainTarget(range?: ReplyChainTargetRange) {
+  const { min, max } = normalizeReplyChainTargetRange(range)
+  const span = max - min + 1
+  return min + Math.floor(Math.random() * span)
+}
+
+function normalizeContextText(value: string) {
+  return value.replace(/\s+/g, ' ').replace(/；\s*/g, '；').trim()
+}
+
+function truncatePreservingEdges(value: string, maxLength: number) {
+  if (value.length <= maxLength) {
+    return value
+  }
+  if (maxLength <= 0) {
+    return ''
+  }
+  if (maxLength <= contextTruncationSuffix.length) {
+    return contextTruncationSuffix.slice(0, maxLength)
+  }
+  if (maxLength <= 24) {
+    return `${value.slice(0, maxLength - contextTruncationSuffix.length)}${contextTruncationSuffix}`
+  }
+
+  const availableLength = maxLength - contextTruncationSuffix.length
+  const headLength = Math.ceil(availableLength * 0.6)
+  const tailLength = availableLength - headLength
+
+  return `${value.slice(0, headLength)}${contextTruncationSuffix}${value.slice(-tailLength)}`
+}
+
+function joinContextParts(parts: string[]) {
+  return parts.map(normalizeContextText).filter(Boolean).join(contextSeparator)
+}
+
+function compactSimulationContext(baseContext: string, maxLength: number) {
+  return truncatePreservingEdges(normalizeContextText(baseContext), maxLength)
+}
+
+function buildBoundedSingleReplyContext(
+  baseContext: string,
+  isContinuation: boolean,
+  replyCount: number,
+) {
+  const replyLimitHint = '本次只生成1条虚拟舍友回复；前端会按需继续请求。'
+  const continuationHint = isContinuation
+    ? `同一会话续答；基于记忆选择下一位舍友；已连续返回${replyCount}条。`
+    : '用户刚发送新表达；重新规划下一位需要回应的舍友。'
+  const requiredHints = joinContextParts([replyLimitHint, continuationHint])
+  const baseMaxLength = Math.max(
+    0,
+    simulationContextMaxLength - requiredHints.length - contextSeparator.length,
+  )
+  const context = joinContextParts([
+    compactSimulationContext(baseContext, baseMaxLength),
+    requiredHints,
+  ])
+
+  if (context.length <= simulationContextMaxLength) {
+    return context
+  }
+
+  return truncatePreservingEdges(context, simulationContextMaxLength)
 }
 
 function isExpiredSessionError(error: unknown) {
@@ -371,13 +455,7 @@ export function useSimulationSession(options: UseSimulationSessionOptions) {
 
   function buildSingleReplyContext(isContinuation: boolean, replyCount: number) {
     const baseContext = options.getContext()
-    const replyLimitHint =
-      '本次只生成 1 条虚拟舍友回复；不要一次性输出完整一轮，前端会在需要时继续请求下一条。'
-    const continuationHint = isContinuation
-      ? `这是同一 conversation_id 的 continuation 请求，请基于已有短期记忆判断下一位需要回应的舍友；当前已连续返回 ${replyCount} 条。`
-      : '这是用户刚发送的新表达，请重新规划下一位需要回应的舍友。'
-
-    return `${baseContext}；${replyLimitHint}；${continuationHint}`
+    return buildBoundedSingleReplyContext(baseContext, isContinuation, replyCount)
   }
 
   function buildSimulationRequest(message: string, isContinuation: boolean, replyCount: number) {
@@ -514,7 +592,7 @@ export function useSimulationSession(options: UseSimulationSessionOptions) {
     let activeUserMessage = firstMessage
     let isContinuation = false
     let replyCount = 0
-    let targetReplyCount = createReplyChainTarget()
+    let targetReplyCount = createReplyChainTarget(options.getReplyChainTargetRange?.())
 
     try {
       while (runId === generationRunId.value && replyCount < maxReplyChainLength) {
@@ -554,7 +632,7 @@ export function useSimulationSession(options: UseSimulationSessionOptions) {
           nextMessage = queuedMessage
           isContinuation = false
           replyCount = 0
-          targetReplyCount = createReplyChainTarget()
+          targetReplyCount = createReplyChainTarget(options.getReplyChainTargetRange?.())
           continue
         }
 
@@ -589,7 +667,7 @@ export function useSimulationSession(options: UseSimulationSessionOptions) {
           nextMessage = queuedMessage
           isContinuation = false
           replyCount = 0
-          targetReplyCount = createReplyChainTarget()
+          targetReplyCount = createReplyChainTarget(options.getReplyChainTargetRange?.())
           continue
         }
 
