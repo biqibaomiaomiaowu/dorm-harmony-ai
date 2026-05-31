@@ -4,7 +4,14 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 
 class EventType(StrEnum):
@@ -821,6 +828,21 @@ class ReviewOriginalEvent(BaseModel):
 RehearsalMode = Literal["scenario_training", "custom_rehearsal"]
 
 
+class ReplyChainRangeMeta(BaseModel):
+    """场景训练复盘来源中期望的回复链长度范围。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    min: int = Field(ge=1, le=15)
+    max: int = Field(ge=1, le=15)
+
+    @model_validator(mode="after")
+    def ensure_max_is_not_less_than_min(self) -> "ReplyChainRangeMeta":
+        if self.max < self.min:
+            raise ValueError("reply_chain_range.max must be greater than or equal to min")
+        return self
+
+
 class ScenarioTrainingReviewMeta(BaseModel):
     """复盘来源为固定场景训练时的目录元信息。"""
 
@@ -836,6 +858,13 @@ class ScenarioTrainingReviewMeta(BaseModel):
     difficulty_id: str
     difficulty_label: str
     difficulty_description: str | None = None
+    roommate_summary: str | None = None
+    reply_chain_range: ReplyChainRangeMeta | None = None
+    difficulty_pressure_profile: str | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_without_null_optional_fields(self, handler):
+        return {key: value for key, value in handler(self).items() if value is not None}
 
 
 class CustomRehearsalReviewMeta(BaseModel):

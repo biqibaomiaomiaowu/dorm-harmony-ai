@@ -93,22 +93,22 @@ DIFFICULTIES: tuple[TrainingDifficulty, ...] = (
     TrainingDifficulty(
         id="beginner",
         label="初级",
-        description="舍友较温和，适合第一次练习",
+        description="1位温和舍友，适合第一次练习",
     ),
     TrainingDifficulty(
         id="intermediate",
         label="中级",
-        description="舍友会解释或轻微反驳",
+        description="2位舍友会解释或轻微反驳",
     ),
     TrainingDifficulty(
         id="advanced",
         label="高级",
-        description="舍友可能回避、质疑或推卸",
+        description="4位舍友会固执反驳、责任转移、冷处理或表面答应不承诺",
     ),
     TrainingDifficulty(
         id="challenge",
         label="挑战",
-        description="多个舍友参与，场面更复杂",
+        description="5位舍友多人反问、站队、推诿、冷处理和责任转移交织",
     ),
 )
 

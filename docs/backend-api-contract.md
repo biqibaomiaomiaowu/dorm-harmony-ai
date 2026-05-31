@@ -6,6 +6,7 @@
 
 - 本项目输出仅用于宿舍关系压力趋势提示和沟通训练建议。
 - 系统不进行心理疾病诊断、医学判断或人格评价。
+- 高级/挑战训练可在安全边界内模拟防御、回避、反问、推诿、冷处理、转移焦点和多人站队，但不得输出辱骂、威胁、羞辱、歧视、操控或人格评价。
 - 当用户描述中出现高压力、暴力风险、严重失眠等情况时，返回内容应提示用户寻求辅导员、心理老师、家人或可信任同学等现实支持。
 
 ## 本地联调约定
@@ -317,6 +318,19 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 - 档案汇总和趋势点都按当前评分模型调用 `analyze_pressure(event)` 重算；`EventRecord.single_analysis` 只作为事件创建时的快照保留。
 - `发生频率较高`、`尚未有效沟通`、`已出现争吵或冷战` 仍会通过单条事件压力分影响贡献值，但不会作为 `source_breakdown` 的独立类别返回。
 
+### GET /api/training/catalog
+
+状态：已实现。返回固定场景训练目录，包括分类、具体场景、训练目标、难度和推荐开场白。
+
+训练难度说明：
+
+| 难度 id | 标签 | 说明 |
+| --- | --- | --- |
+| `beginner` | 初级 | 1位温和舍友，适合第一次练习 |
+| `intermediate` | 中级 | 2位舍友会解释或轻微反驳 |
+| `advanced` | 高级 | 4位舍友会固执反驳、责任转移、冷处理或表面答应不承诺 |
+| `challenge` | 挑战 | 5位舍友多人反问、站队、推诿、冷处理和责任转移交织 |
+
 ## AI 与 V4 演练/复盘接口
 
 以下内容为当前已实现 AI 接口。`/api/simulate`、`/api/simulate/stream`、`/api/events/insight` 与 `/api/review` 运行时通过 LangChain 调用 DeepSeek 官方 OpenAI 兼容 API，并返回便于前端展示的结构化响应。模拟与复盘可通过 LangGraph SQLite 会话记忆读取同一 `conversation_id` 的历史对话。
@@ -541,6 +555,11 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 | `difficulty_id` | string | 难度 id |
 | `difficulty_label` | string | 难度展示名 |
 | `difficulty_description` | string \| null | 可选，训练难度说明；旧请求可省略 |
+| `roommate_summary` | string \| null | 可选，当前训练使用的虚拟舍友摘要 |
+| `reply_chain_range` | object \| null | 可选，当前训练期望的回复链长度范围 |
+| `reply_chain_range.min` | number | 最小回复链长度，整数，范围 1-15 |
+| `reply_chain_range.max` | number | 最大回复链长度，整数，范围 1-15，必须大于等于 `min` |
+| `difficulty_pressure_profile` | string \| null | 可选，当前难度的压力画像或高难度行为说明 |
 
 `source_meta.mode="custom_rehearsal"` 字段：
 
@@ -601,7 +620,13 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
     "target_label": "提出请求",
     "difficulty_id": "intermediate",
     "difficulty_label": "中级",
-    "difficulty_description": "在对方轻微反驳时继续保持温和、具体的请求。"
+    "difficulty_description": "2位舍友会解释或轻微反驳",
+    "roommate_summary": "舍友 A 容易直接反驳，舍友 B 偏回避。",
+    "reply_chain_range": {
+      "min": 2,
+      "max": 5
+    },
+    "difficulty_pressure_profile": "中级难度以解释和轻微反驳为主，仍保持安全、非攻击表达。"
   },
   "dialogue": [
     {

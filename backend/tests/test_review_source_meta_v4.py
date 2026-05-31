@@ -31,6 +31,12 @@ SCENARIO_TRAINING_SOURCE_META = {
     "difficulty_label": "中级",
     "difficulty_description": "在对方轻微反驳时继续保持温和、具体的请求。",
 }
+ENHANCED_SCENARIO_TRAINING_SOURCE_META = {
+    **SCENARIO_TRAINING_SOURCE_META,
+    "roommate_summary": "舍友 A 容易防御，舍友 B 常回避，舍友 C 会跟着多数意见。",
+    "reply_chain_range": {"min": 4, "max": 8},
+    "difficulty_pressure_profile": "高级难度要求对方在安全边界内更固执，不要过早让步。",
+}
 CUSTOM_REHEARSAL_SOURCE_META = {
     "mode": "custom_rehearsal",
     "scenario": "我想练习如何和舍友沟通临时带朋友来宿舍的问题。",
@@ -116,6 +122,63 @@ def test_review_endpoint_accepts_scenario_training_source_meta():
         service.review_request.source_meta.scenario_id
         == SCENARIO_TRAINING_SOURCE_META["scenario_id"]
     )
+
+
+def test_review_endpoint_accepts_enhanced_scenario_training_source_meta():
+    service = CapturingReviewService()
+    app.dependency_overrides[get_ai_service] = lambda: service
+
+    response = api_request(
+        "POST",
+        "/api/review",
+        json={
+            "conversation_id": "conversation-enhanced-scenario-training",
+            "scenario": "舍友晚上打游戏声音很大，影响睡眠。",
+            "source_meta": ENHANCED_SCENARIO_TRAINING_SOURCE_META,
+            "dialogue": [
+                {"speaker": "user", "message": "能不能晚上小声一点？"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert service.review_request is not None
+    source_meta = service.review_request.source_meta
+    assert source_meta is not None
+    assert source_meta.mode == "scenario_training"
+    assert source_meta.roommate_summary == ENHANCED_SCENARIO_TRAINING_SOURCE_META["roommate_summary"]
+    assert source_meta.reply_chain_range is not None
+    assert source_meta.reply_chain_range.min == 4
+    assert source_meta.reply_chain_range.max == 8
+    assert (
+        source_meta.difficulty_pressure_profile
+        == ENHANCED_SCENARIO_TRAINING_SOURCE_META["difficulty_pressure_profile"]
+    )
+
+
+def test_review_endpoint_rejects_reply_chain_range_when_max_is_less_than_min():
+    service = CapturingReviewService()
+    app.dependency_overrides[get_ai_service] = lambda: service
+    source_meta = {
+        **ENHANCED_SCENARIO_TRAINING_SOURCE_META,
+        "reply_chain_range": {"min": 9, "max": 4},
+    }
+
+    response = api_request(
+        "POST",
+        "/api/review",
+        json={
+            "conversation_id": "conversation-invalid-range",
+            "scenario": "舍友晚上打游戏声音很大，影响睡眠。",
+            "source_meta": source_meta,
+            "dialogue": [
+                {"speaker": "user", "message": "能不能晚上小声一点？"},
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert service.review_request is None
 
 
 def test_review_endpoint_accepts_legacy_scenario_training_source_meta_without_difficulty_description():

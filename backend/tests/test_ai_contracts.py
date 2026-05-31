@@ -8,7 +8,9 @@ import app.schemas as schemas
 from app.ai_prompts import (
     ARCHIVE_INSIGHT_SYSTEM_PROMPT,
     REVIEW_SYSTEM_PROMPT,
+    ROOMMATE_REPLY_SYSTEM_PROMPT,
     SIMULATE_SYSTEM_PROMPT,
+    SPEAKER_PLAN_SYSTEM_PROMPT,
     build_archive_insight_messages,
     build_review_messages,
     build_simulate_messages,
@@ -678,6 +680,56 @@ def test_build_review_messages_includes_scenario_training_source_meta():
     assert "训练难度" in message_content
     assert "difficulty_description" in message_content
     assert "在对方轻微反驳时继续保持温和、具体的请求" in message_content
+
+
+def test_build_review_messages_includes_enhanced_scenario_training_source_meta():
+    request = ReviewRequest(
+        scenario="舍友晚上打游戏声音很大，影响睡眠。",
+        dialogue=[DialogueMessage(speaker="user", message="能不能晚上小声一点？")],
+        source_meta={
+            "mode": "scenario_training",
+            "category_id": "noise",
+            "category_label": "噪音冲突",
+            "scenario_id": "noise_game_night",
+            "scenario_title": "训练场景：晚上打游戏声音太大",
+            "target_id": "make_request",
+            "target_label": "训练目标：提出具体请求",
+            "difficulty_id": "advanced",
+            "difficulty_label": "训练难度：高级",
+            "difficulty_description": "4位舍友会固执反驳、责任转移、冷处理或表面答应不承诺。",
+            "roommate_summary": "舍友 A 容易防御，舍友 B 常回避，舍友 C 会跟着多数意见。",
+            "reply_chain_range": {"min": 4, "max": 8},
+            "difficulty_pressure_profile": "高级难度要求对方在安全边界内更固执，不要过早让步。",
+        },
+    )
+
+    messages = build_review_messages(request)
+
+    message_content = str(messages[-1].content)
+    assert "roommate_summary" in message_content
+    assert "舍友 A 容易防御" in message_content
+    assert "reply_chain_range" in message_content
+    assert '"min": 4' in message_content
+    assert '"max": 8' in message_content
+    assert "difficulty_pressure_profile" in message_content
+    assert "不要过早让步" in message_content
+
+
+def test_roommate_reply_prompt_describes_high_difficulty_without_unsafe_language():
+    assert "高级/挑战" in ROOMMATE_REPLY_SYSTEM_PROMPT
+    for behavior in ["防御", "回避", "反问", "推诿", "冷处理", "转移焦点", "多人站队"]:
+        assert behavior in ROOMMATE_REPLY_SYSTEM_PROMPT
+    assert "不要把高难度写得过于配合或过早让步" in ROOMMATE_REPLY_SYSTEM_PROMPT
+    for boundary in ["辱骂", "威胁", "羞辱", "歧视", "操控", "人格评价"]:
+        assert boundary in ROOMMATE_REPLY_SYSTEM_PROMPT
+
+
+def test_speaker_plan_prompt_prioritizes_challenge_multi_role_continuation():
+    assert "挑战难度" in SPEAKER_PLAN_SYSTEM_PROMPT
+    assert "更多角色参与" in SPEAKER_PLAN_SYSTEM_PROMPT
+    assert "允许同一舍友再次出现" in SPEAKER_PLAN_SYSTEM_PROMPT
+    assert "不应过早自然收束" in SPEAKER_PLAN_SYSTEM_PROMPT
+    assert "用户已提出可执行方案且多位舍友已有回应" in SPEAKER_PLAN_SYSTEM_PROMPT
 
 
 def test_review_system_prompt_bounds_source_meta_usage():
