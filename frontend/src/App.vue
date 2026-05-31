@@ -333,7 +333,11 @@ async function submitPassphrase() {
           </div>
         </header>
 
-        <RouterView />
+        <RouterView v-slot="{ Component, route }">
+          <Transition name="route-page" mode="out-in">
+            <component :is="Component" :key="route.fullPath" />
+          </Transition>
+        </RouterView>
       </div>
 
       <nav class="mobile-nav card-border" aria-label="移动端主导航">
