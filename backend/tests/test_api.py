@@ -1,6 +1,6 @@
 import inspect
 import json
-from datetime import date
+from datetime import date, timedelta
 
 from fastapi.testclient import TestClient
 import pytest
@@ -28,6 +28,7 @@ from app.safety import SAFETY_DISCLAIMER
 from app.schemas import (
     ArchiveInsightResponse,
     DialogueMessage,
+    EventRecordCreate,
     ReviewRequest,
     ReviewResponse,
     RoommateReply,
@@ -519,6 +520,62 @@ def test_event_analysis_endpoint_handles_empty_archive():
     assert body["event_count"] == 0
     assert body["source_breakdown"] == []
     assert "先记录事件" in body["suggestion"]
+
+
+def test_event_analysis_endpoint_accepts_supported_range_days():
+    event_store = InMemoryEventStore()
+    app.dependency_overrides[get_event_store] = lambda: event_store
+
+    for event_date, description in (
+        (date.today(), "今天的噪音事件。"),
+        (date.today() - timedelta(days=8), "稍早的噪音事件。"),
+    ):
+        event_store.add(
+            EventRecordCreate(
+                event_date=event_date,
+                event_type="noise",
+                severity=4,
+                frequency="weekly_multiple",
+                emotion="anxious",
+                has_communicated=False,
+                has_conflict=True,
+                description=description,
+            )
+        )
+
+    default_response = client.get("/api/events/analysis")
+    range_7_response = client.get("/api/events/analysis?range_days=7")
+    range_90_response = client.get("/api/events/analysis?range_days=90")
+
+    assert default_response.status_code == 200
+    assert default_response.json()["period_days"] == 30
+    assert range_7_response.status_code == 200
+    assert range_90_response.status_code == 200
+
+    range_7_body = range_7_response.json()
+    assert range_7_body["period_days"] == 7
+    assert range_7_body["active_period_count"] == 1
+    for field in (
+        "trend_points",
+        "trend_explanation",
+        "source_insights",
+        "main_source_conclusion",
+        "emotion_distribution",
+        "event_insight",
+        "training_recommendation",
+    ):
+        assert field in range_7_body
+
+    range_90_body = range_90_response.json()
+    assert range_90_body["period_days"] == 90
+    assert range_90_body["active_period_count"] == 2
+
+
+def test_event_analysis_endpoint_rejects_invalid_range_days():
+    response = client.get("/api/events/analysis?range_days=14")
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "range_days must be one of 7, 15, 30, 90"
 
 
 def test_delete_event_record_removes_event_from_archive():

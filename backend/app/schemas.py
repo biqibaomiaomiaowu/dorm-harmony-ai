@@ -170,12 +170,80 @@ class SourceBreakdown(BaseModel):
     contribution: float
 
 
+class ArchiveTrendPoint(BaseModel):
+    """档案周期趋势中的单日压力聚合点。"""
+
+    date: str
+    pressure_score: int = Field(ge=0, le=100)
+    event_count: int = Field(ge=0)
+
+
+class EmotionDistributionItem(BaseModel):
+    """周期内情绪分布的一项。"""
+
+    emotion: Emotion
+    label: str
+    count: int = Field(ge=0)
+    percent: int = Field(ge=0, le=100)
+
+
+class SourceInsight(BaseModel):
+    """档案压力来源的可解释拆解。"""
+
+    rank: int = Field(ge=1)
+    label: str
+    percent: int = Field(ge=0, le=100)
+    contribution: float = Field(ge=0)
+    event_count: int = Field(ge=0)
+    recent_event_date: date | None = None
+    explanation: str
+
+
+class EventInsightSummary(BaseModel):
+    """周期内事件事实摘要，不做诊断或人格判断。"""
+
+    period_days: int = Field(ge=1)
+    period_event_count: int = Field(ge=0)
+    top_emotions: list[str]
+    top_event_types: list[str]
+    communicated_count: int = Field(default=0, ge=0)
+    uncommunicated_count: int = Field(default=0, ge=0)
+    conflict_count: int = Field(default=0, ge=0)
+    summary: str
+
+
+class TrainingRecommendation(BaseModel):
+    """基于档案事实生成的 V4 沟通训练推荐。"""
+
+    category_id: str
+    category_label: str
+    scenario_id: str
+    scenario_title: str
+    target_id: str
+    target_label: str
+    difficulty_id: str
+    difficulty_label: str
+    difficulty_description: str
+    reason: str
+    opening_suggestion: str
+    safety_note: str
+
+
 class ArchiveAnalysisResponse(AnalyzeResponse):
     """事件档案总压力分析接口的结构化响应。"""
 
     event_count: int
     active_30d_count: int
     source_breakdown: list[SourceBreakdown]
+    period_days: int = 30
+    active_period_count: int = 0
+    trend_points: list[ArchiveTrendPoint] = Field(default_factory=list)
+    trend_explanation: str = ""
+    source_insights: list[SourceInsight] = Field(default_factory=list)
+    main_source_conclusion: str = ""
+    emotion_distribution: list[EmotionDistributionItem] = Field(default_factory=list)
+    event_insight: EventInsightSummary | None = None
+    training_recommendation: TrainingRecommendation | None = None
 
 
 class ArchiveInsightResponse(BaseModel):

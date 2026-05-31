@@ -19,6 +19,7 @@ from app.ai_service import (
     ReviewDialogueInvalidError,
 )
 from app.archive_analysis import analyze_archive_pressure
+from app.archive_metrics import SUPPORTED_RANGE_DAYS
 from app.env import load_project_env
 from app.event_store import EventStore, SQLiteEventStore, get_default_sqlite_path
 from app.review_store import SQLiteReviewHistoryStore
@@ -201,10 +202,16 @@ def delete_event_record(
 
 @app.get("/api/events/analysis", response_model=ArchiveAnalysisResponse)
 def analyze_event_archive(
+    range_days: int = Query(default=30),
     event_store: EventStore = Depends(get_event_store),
 ) -> ArchiveAnalysisResponse:
     """汇总事件档案并返回总压力分析，不调用 AI 服务。"""
-    return analyze_archive_pressure(event_store.list())
+    if range_days not in SUPPORTED_RANGE_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail="range_days must be one of 7, 15, 30, 90",
+        )
+    return analyze_archive_pressure(event_store.list(), period_days=range_days)
 
 
 @app.post("/api/events/insight", response_model=ArchiveInsightResponse)

@@ -235,6 +235,18 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 
 状态：已实现。后端读取当前事件档案，并按当前评分模型重新计算总压力分析。
 
+请求参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `range_days` | number | 否 | 压力趋势、当前周期事件数、情绪分布、事件洞察和训练推荐使用的周期天数；仅支持 `7`、`15`、`30`、`90`，默认 `30` |
+
+错误语义：
+
+| 场景 | HTTP 状态码 | 说明 |
+| --- | --- | --- |
+| `range_days` 不在支持范围内 | `422` | 返回 `range_days must be one of 7, 15, 30, 90` |
+
 响应字段：
 
 | 字段 | 类型 | 说明 |
@@ -254,8 +266,56 @@ export DORM_HARMONY_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:7357"
 | `source_breakdown[].label` | string | 事件类型中文标签：噪音冲突、作息冲突、卫生冲突、费用冲突、隐私边界、情绪冲突 |
 | `source_breakdown[].percent` | number | 该事件类型贡献占比，返回项合计为 100 |
 | `source_breakdown[].contribution` | number | 该事件类型的压力贡献，按 `analyze_pressure(event).pressure_score * recency_weight` 聚合 |
+| `period_days` | number | 当前周期天数，对应请求的 `range_days` |
+| `active_period_count` | number | 当前周期内事件数；切换 `range_days` 时该字段会随周期变化 |
+| `trend_points` | object[] | 当前周期内按日期聚合的压力趋势点；无数据时为空数组 |
+| `trend_points[].date` | string | 趋势点日期，格式为 `YYYY-MM-DD` |
+| `trend_points[].pressure_score` | number | 当天事件压力分均值，0-100；同日多事件按当前评分模型重算后取平均 |
+| `trend_points[].event_count` | number | 当天事件数量 |
+| `trend_explanation` | string | 根据当前周期趋势点生成的解释；0 或 1 个点时会提示记录不足 |
+| `source_insights` | object[] | 压力来源的排名、占比和解释，来源于 `source_breakdown` |
+| `source_insights[].rank` | number | 压力来源排名，从 1 开始 |
+| `source_insights[].label` | string | 压力来源中文标签 |
+| `source_insights[].percent` | number | 该来源贡献占比 |
+| `source_insights[].contribution` | number | 该来源压力贡献值 |
+| `source_insights[].event_count` | number | 该来源在档案中的事件数量 |
+| `source_insights[].recent_event_date` | string/null | 该来源最近一次事件日期，格式为 `YYYY-MM-DD` |
+| `source_insights[].explanation` | string | 来源占比、事件数和最近日期的客观解释 |
+| `main_source_conclusion` | string | 主要压力来源结论 |
+| `emotion_distribution` | object[] | 当前周期内情绪分布，按出现次数降序；无数据时为空数组 |
+| `emotion_distribution[].emotion` | string | 情绪代码：`irritable`、`anxious`、`wronged`、`angry`、`helpless`、`depressed` |
+| `emotion_distribution[].label` | string | 情绪中文标签 |
+| `emotion_distribution[].count` | number | 当前周期内该情绪出现次数；单条事件内重复情绪去重 |
+| `emotion_distribution[].percent` | number | 当前周期内该情绪占比，返回项合计为 100 |
+| `event_insight` | object/null | 当前周期内事件事实摘要；周期内无事件时为 `null` |
+| `event_insight.period_days` | number | 摘要对应周期天数 |
+| `event_insight.period_event_count` | number | 摘要对应周期内事件数 |
+| `event_insight.top_emotions` | string[] | 当前周期内出现较多的情绪中文标签，最多 3 项 |
+| `event_insight.top_event_types` | string[] | 当前周期内出现较多的事件类型中文标签，最多 3 项 |
+| `event_insight.communicated_count` | number | 当前周期内已沟通事件数 |
+| `event_insight.uncommunicated_count` | number | 当前周期内未沟通事件数 |
+| `event_insight.conflict_count` | number | 当前周期内已出现直接冲突的事件数 |
+| `event_insight.summary` | string | 只基于事件事实的客观摘要，不做心理诊断、医学判断或人格评价 |
+| `training_recommendation` | object/null | 基于当前周期事件和总压力分析生成的固定场景训练推荐；周期内无事件时为 `null` |
+| `training_recommendation.category_id` | string | 推荐训练分类 id |
+| `training_recommendation.category_label` | string | 推荐训练分类中文标签 |
+| `training_recommendation.scenario_id` | string | 推荐具体场景 id |
+| `training_recommendation.scenario_title` | string | 推荐具体场景标题 |
+| `training_recommendation.target_id` | string | 推荐训练目标 id |
+| `training_recommendation.target_label` | string | 推荐训练目标中文标签 |
+| `training_recommendation.difficulty_id` | string | 推荐训练难度 id |
+| `training_recommendation.difficulty_label` | string | 推荐训练难度中文标签 |
+| `training_recommendation.difficulty_description` | string | 推荐训练难度说明 |
+| `training_recommendation.reason` | string | 推荐原因，基于主要来源、周期事件数和风险等级 |
+| `training_recommendation.opening_suggestion` | string | 推荐开场白，可由前端直接带入场景训练 |
+| `training_recommendation.safety_note` | string | 非诊断性边界和现实支持提示；高压力状态会强调辅导员、宿管、心理老师等现实支持 |
 
-说明：`发生频率较高`、`尚未有效沟通`、`已出现争吵或冷战` 仍会通过单条事件压力分影响贡献值，但不会作为 `source_breakdown` 的独立类别返回。
+说明：
+
+- `pressure_score`、`risk_level`、`risk_label`、`main_sources`、`source_breakdown` 和 `active_30d_count` 保持全档案/近 30 天兼容口径；切换 `range_days` 不会让左侧总压力指数按周期跳变。
+- `active_period_count`、`trend_points`、`emotion_distribution`、`event_insight` 和 `training_recommendation` 使用当前 `range_days` 周期。
+- 档案汇总和趋势点都按当前评分模型调用 `analyze_pressure(event)` 重算；`EventRecord.single_analysis` 只作为事件创建时的快照保留。
+- `发生频率较高`、`尚未有效沟通`、`已出现争吵或冷战` 仍会通过单条事件压力分影响贡献值，但不会作为 `source_breakdown` 的独立类别返回。
 
 ## AI 与 V3 模拟/复盘接口
 

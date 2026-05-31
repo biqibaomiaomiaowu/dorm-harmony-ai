@@ -6,36 +6,39 @@ from collections import defaultdict
 from datetime import date
 from math import log
 
+from app.archive_metrics import (
+    EVENT_TYPE_LABELS,
+    build_emotion_distribution,
+    build_event_insight,
+    build_main_source_conclusion,
+    build_source_insights,
+    build_trend_explanation,
+    build_trend_points,
+    filter_events_by_period,
+    normalize_period_days,
+    recommend_training,
+)
 from app.safety import SAFETY_DISCLAIMER
 from app.schemas import (
     AnalyzeRiskLevel,
     ArchiveAnalysisResponse,
     EventRecord,
-    EventType,
     SourceBreakdown,
 )
 from app.scoring import analyze_pressure
 
 
-ARCHIVE_EVENT_TYPE_LABELS: dict[EventType, str] = {
-    EventType.NOISE: "噪音冲突",
-    EventType.SCHEDULE: "作息冲突",
-    EventType.HYGIENE: "卫生冲突",
-    EventType.COST: "费用冲突",
-    EventType.PRIVACY: "隐私边界",
-    EventType.EMOTION: "情绪冲突",
-}
-
-
 def analyze_archive_pressure(
     events: list[EventRecord],
     today: date | None = None,
+    period_days: int = 30,
 ) -> ArchiveAnalysisResponse:
     """汇总事件档案，返回当前宿舍关系总压力。
 
     档案汇总按当前规则调用 analyze_pressure() 重算，以便评分模型调整后整体口径一致。
     """
     analysis_date = today or date.today()
+    normalized_period_days = normalize_period_days(period_days)
     if not events:
         return ArchiveAnalysisResponse(
             pressure_score=0,
@@ -50,6 +53,15 @@ def analyze_archive_pressure(
             event_count=0,
             active_30d_count=0,
             source_breakdown=[],
+            period_days=normalized_period_days,
+            active_period_count=0,
+            trend_points=[],
+            trend_explanation=build_trend_explanation([], "stable"),
+            source_insights=[],
+            main_source_conclusion="",
+            emotion_distribution=[],
+            event_insight=None,
+            training_recommendation=None,
         )
 
     weighted_score_sum = 0.0
@@ -58,11 +70,13 @@ def analyze_archive_pressure(
     event_types = set()
     source_contributions: dict[str, float] = defaultdict(float)
     emotion_keywords: list[str] = []
+    current_pressure_scores: dict[str, int] = {}
 
     for event in events:
         days_since_event = max((analysis_date - event.event_date).days, 0)
         recency_weight = _recency_weight(days_since_event)
         single_analysis = analyze_pressure(event)
+        current_pressure_scores[event.id] = single_analysis.pressure_score
 
         weighted_score_sum += single_analysis.pressure_score * recency_weight
         weight_sum += recency_weight
@@ -76,7 +90,7 @@ def analyze_archive_pressure(
             if keyword not in emotion_keywords
         )
 
-        source_label = ARCHIVE_EVENT_TYPE_LABELS[event.event_type]
+        source_label = EVENT_TYPE_LABELS[event.event_type]
         source_contributions[source_label] += (
             single_analysis.pressure_score * recency_weight
         )
@@ -89,8 +103,17 @@ def analyze_archive_pressure(
     )
     risk_level, risk_label = _risk_for_public_score(pressure_score)
     source_breakdown = _source_breakdown(source_contributions)
-
-    return ArchiveAnalysisResponse(
+    active_period_count = len(
+        filter_events_by_period(events, analysis_date, normalized_period_days)
+    )
+    trend_points = build_trend_points(
+        events,
+        analysis_date,
+        normalized_period_days,
+        current_pressure_scores,
+    )
+    source_insights = build_source_insights(events, source_breakdown, analysis_date)
+    response = ArchiveAnalysisResponse(
         pressure_score=pressure_score,
         risk_level=risk_level,
         risk_label=risk_label,
@@ -106,7 +129,31 @@ def analyze_archive_pressure(
         event_count=len(events),
         active_30d_count=active_30d_count,
         source_breakdown=source_breakdown,
+        period_days=normalized_period_days,
+        active_period_count=active_period_count,
+        trend_points=trend_points,
+        trend_explanation=build_trend_explanation(trend_points, risk_level),
+        source_insights=source_insights,
+        main_source_conclusion=build_main_source_conclusion(source_insights),
+        emotion_distribution=build_emotion_distribution(
+            events,
+            analysis_date,
+            normalized_period_days,
+        ),
+        event_insight=build_event_insight(
+            events,
+            analysis_date,
+            normalized_period_days,
+        ),
     )
+    response.training_recommendation = recommend_training(
+        events,
+        response,
+        normalized_period_days,
+        analysis_date,
+    )
+
+    return response
 
 
 def _recency_weight(days_since_event: int) -> float:
