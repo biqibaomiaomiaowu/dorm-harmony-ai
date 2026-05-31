@@ -222,6 +222,45 @@ class ArchiveInsightResponse(BaseModel):
         return _validate_safety_note_boundaries(value)
 
 
+class TrainingCategory(BaseModel):
+    """V4 沟通训练场景类别。"""
+
+    id: str
+    label: str
+
+
+class TrainingScenario(BaseModel):
+    """V4 沟通训练中的具体宿舍场景。"""
+
+    category_id: str
+    id: str
+    title: str
+
+
+class TrainingTarget(BaseModel):
+    """V4 沟通训练目标。"""
+
+    id: str
+    label: str
+
+
+class TrainingDifficulty(BaseModel):
+    """V4 沟通训练难度。"""
+
+    id: str
+    label: str
+    description: str
+
+
+class TrainingCatalogResponse(BaseModel):
+    """V4 沟通训练固定目录响应。"""
+
+    categories: list[TrainingCategory]
+    scenarios: list[TrainingScenario]
+    targets: list[TrainingTarget]
+    difficulties: list[TrainingDifficulty]
+
+
 RoommatePresetKey = Literal["direct", "avoidant", "harmony"]
 RoommateTagMode = Literal["preset", "custom"]
 RoommateAvatarKey = Literal["nailong", "capybara_lulu", "baobaolong", "patrick", "spongebob"]

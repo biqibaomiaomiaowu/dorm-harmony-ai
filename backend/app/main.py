@@ -36,9 +36,11 @@ from app.schemas import (
     ReviewResponse,
     SimulateRequest,
     SimulateResponse,
+    TrainingCatalogResponse,
     emotion_display_label,
 )
 from app.scoring import analyze_pressure
+from app.training_catalog import build_training_catalog_response
 
 
 load_project_env()
@@ -153,6 +155,12 @@ def _truncate_archive_text(text: str, max_length: int) -> str:
 async def health() -> dict[str, str]:
     """返回后端健康检查状态，不依赖 AI 服务配置。"""
     return {"status": "ok"}
+
+
+@app.get("/api/training/catalog", response_model=TrainingCatalogResponse)
+def training_catalog() -> TrainingCatalogResponse:
+    """返回 V4 固定沟通训练目录，不调用 AI 服务。"""
+    return build_training_catalog_response()
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)

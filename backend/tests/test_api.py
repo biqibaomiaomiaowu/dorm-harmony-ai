@@ -270,6 +270,58 @@ def test_health_endpoint_returns_ok_status():
     assert response.json() == {"status": "ok"}
 
 
+def test_training_catalog_endpoint_returns_v4_catalog():
+    response = client.get("/api/training/catalog")
+
+    assert response.status_code == 200
+    data = response.json()
+
+    assert [category["id"] for category in data["categories"]] == [
+        "noise",
+        "schedule",
+        "hygiene",
+        "cost",
+        "privacy",
+        "emotion",
+    ]
+    assert [scenario["id"] for scenario in data["scenarios"]] == [
+        "noise_game_night",
+        "noise_video_noon",
+        "schedule_lights_out_chat",
+        "schedule_morning_wash",
+        "hygiene_trash",
+        "hygiene_shared_desk",
+        "cost_utility_split",
+        "cost_public_items",
+        "privacy_borrow_items",
+        "privacy_visitors",
+        "emotion_cold_war",
+        "emotion_tone_uncomfortable",
+    ]
+    assert [target["id"] for target in data["targets"]] == [
+        "express_feeling",
+        "make_request",
+        "negotiate_rule",
+        "respond_objection",
+        "repair_relationship",
+    ]
+    assert [difficulty["id"] for difficulty in data["difficulties"]] == [
+        "beginner",
+        "intermediate",
+        "advanced",
+        "challenge",
+    ]
+
+    assert len(data["categories"]) == 6
+    assert len(data["scenarios"]) == 12
+    assert len(data["targets"]) == 5
+    assert len(data["difficulties"]) == 4
+    assert all(category["label"].strip() for category in data["categories"])
+    assert all(scenario["title"].strip() for scenario in data["scenarios"])
+    assert all(target["label"].strip() for target in data["targets"])
+    assert all(difficulty["label"].strip() for difficulty in data["difficulties"])
+
+
 def test_analyze_endpoint_returns_structured_pressure_analysis():
     response = client.post(
         "/api/analyze",
