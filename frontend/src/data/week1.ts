@@ -25,6 +25,12 @@ export interface ScenarioTrainingSourceMeta {
   difficulty_id: string
   difficulty_label: string
   difficulty_description?: string
+  roommate_summary?: string
+  reply_chain_range?: {
+    min: number
+    max: number
+  }
+  difficulty_pressure_profile?: string
 }
 
 export interface CustomRehearsalSourceMeta {

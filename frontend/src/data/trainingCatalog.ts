@@ -1,4 +1,10 @@
 import type { RehearsalSourceMeta } from '@/data/week1'
+import {
+  buildScenarioTrainingRoommates,
+  getScenarioDifficultyPressureProfile,
+  getScenarioReplyPolicy,
+  summarizeScenarioRoommates,
+} from '@/data/scenarioDifficultyPolicy'
 
 export type TrainingCategoryId = 'noise' | 'schedule' | 'hygiene' | 'cost' | 'privacy' | 'emotion'
 
@@ -87,10 +93,18 @@ export const trainingTargets: TrainingTarget[] = [
 ]
 
 export const trainingDifficulties: TrainingDifficulty[] = [
-  { id: 'beginner', label: '初级', description: '1 位温和舍友，愿意听你说，反驳较弱' },
-  { id: 'intermediate', label: '中级', description: '2 位舍友，一位解释，一位轻微反驳' },
-  { id: 'advanced', label: '高级', description: '3 位舍友，直接、回避和边界/推卸反应更明显' },
-  { id: 'challenge', label: '挑战', description: '4-5 位舍友，多人质疑、回避、推卸与调停交织' },
+  { id: 'beginner', label: '初级', description: '1 位温和舍友' },
+  { id: 'intermediate', label: '中级', description: '2 位解释/轻微反驳舍友' },
+  {
+    id: 'advanced',
+    label: '高级',
+    description: '4 位固执反驳/责任转移/冷处理/表面答应不承诺舍友',
+  },
+  {
+    id: 'challenge',
+    label: '挑战',
+    description: '5 位多人反问/站队/推诿/冷处理/责任转移交织舍友',
+  },
 ]
 
 const scenarioRequestDirections: Record<TrainingScenarioId, string> = {
@@ -169,6 +183,9 @@ export function buildScenarioTrainingSourceMeta(
     return undefined
   }
 
+  const roommates = buildScenarioTrainingRoommates(difficulty.id)
+  const replyPolicy = getScenarioReplyPolicy(difficulty.id)
+
   return {
     mode: 'scenario_training',
     category_id: category.id,
@@ -180,5 +197,8 @@ export function buildScenarioTrainingSourceMeta(
     difficulty_id: difficulty.id,
     difficulty_label: difficulty.label,
     difficulty_description: difficulty.description,
+    roommate_summary: summarizeScenarioRoommates(roommates),
+    reply_chain_range: replyPolicy,
+    difficulty_pressure_profile: getScenarioDifficultyPressureProfile(difficulty.id),
   }
 }

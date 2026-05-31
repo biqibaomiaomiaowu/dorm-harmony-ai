@@ -10,6 +10,9 @@ import {
 } from '@/data/week1'
 
 type RecordLike = Record<string, unknown>
+type ScenarioReplyChainRange = NonNullable<
+  Extract<RehearsalSourceMeta, { mode: 'scenario_training' }>['reply_chain_range']
+>
 
 export interface ReviewReportSummary {
   id: string
@@ -79,6 +82,26 @@ function assertScore(value: unknown, field: string): number {
   }
 
   return score
+}
+
+function assertOptionalReplyChainRange(
+  value: unknown,
+  field: string,
+): ScenarioReplyChainRange | undefined {
+  if (typeof value === 'undefined' || value === null) {
+    return undefined
+  }
+  if (!isRecord(value)) {
+    throw new Error(`复盘历史字段异常：${field}`)
+  }
+
+  const min = assertFiniteNumber(value.min, `${field}.min`)
+  const max = assertFiniteNumber(value.max, `${field}.max`)
+  if (min > max) {
+    throw new Error(`复盘历史字段异常：${field}`)
+  }
+
+  return { min, max }
 }
 
 function assertDateString(value: unknown, field: string): string {
@@ -168,6 +191,24 @@ function assertRehearsalSourceMetaField(value: unknown, field: string): Rehearsa
     )
     if (difficultyDescription) {
       sourceMeta.difficulty_description = difficultyDescription
+    }
+    const roommateSummary = assertOptionalString(value.roommate_summary, `${field}.roommate_summary`)
+    if (roommateSummary) {
+      sourceMeta.roommate_summary = roommateSummary
+    }
+    const replyChainRange = assertOptionalReplyChainRange(
+      value.reply_chain_range,
+      `${field}.reply_chain_range`,
+    )
+    if (replyChainRange) {
+      sourceMeta.reply_chain_range = replyChainRange
+    }
+    const difficultyPressureProfile = assertOptionalString(
+      value.difficulty_pressure_profile,
+      `${field}.difficulty_pressure_profile`,
+    )
+    if (difficultyPressureProfile) {
+      sourceMeta.difficulty_pressure_profile = difficultyPressureProfile
     }
 
     return sourceMeta
