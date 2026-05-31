@@ -4,6 +4,7 @@ import { RouterLink, useRouter } from 'vue-router'
 
 import { useGsapMotion } from '@/composables/useGsapMotion'
 import {
+  assertRehearsalSourceMeta,
   deleteReviewReport,
   fetchReviewHistory,
   fetchReviewReport,
@@ -23,6 +24,7 @@ import {
   submitReviewRequest,
   type AnalyzeRequest,
   type AnalyzeResult,
+  type RehearsalSourceMeta,
   type ReviewDialogueLine,
   type ReviewDialogueSpeaker,
   type ReviewRequest,
@@ -42,18 +44,21 @@ interface ReviewContext {
   dialogue: ReviewDialogueLine[]
   roommateNames: Partial<Record<ReviewDialogueSpeaker, string>>
   original_event?: ReviewRequest['original_event']
+  sourceMeta?: RehearsalSourceMeta | null
 }
 
 interface ReviewSimulationCache {
   request: SimulationRequest
   response: SimulationResponse
   dialogue?: ReviewDialogueLine[]
+  source_meta?: RehearsalSourceMeta
 }
 
 interface StoredReviewCache {
   request: ReviewRequest
   response: ReviewResponse
   dialogue_fingerprint?: string
+  source_meta?: RehearsalSourceMeta
 }
 
 interface ReviewSnapshot {
@@ -61,6 +66,7 @@ interface ReviewSnapshot {
   response: ReviewResponse
   dialogue: ReviewDialogueLine[]
   roommateNames: ReviewContext['roommateNames']
+  sourceMeta?: RehearsalSourceMeta | null
 }
 
 const fallbackDialogueMessage = '请先明确你本次沟通希望对方做出的具体调整。'
@@ -83,6 +89,7 @@ const reviewRequest = ref<ReviewRequest>({ scenario: '沟通复盘场景' })
 const reviewResponse = ref<ReviewResponse>(
   buildDemoReviewResponse('复盘页初始化', reviewRequest.value),
 )
+const reviewSourceMeta = ref<RehearsalSourceMeta | null>(null)
 const currentReviewSnapshot = ref<ReviewSnapshot | null>(null)
 const reviewHistory = ref<ReviewReportSummary[]>([])
 const reviewHistoryError = ref('')
@@ -119,6 +126,18 @@ function requestFingerprint(value: ReviewRequest): string {
 
 function dialogueFingerprint(dialogue: ReviewDialogueLine[]): string {
   return JSON.stringify(dialogue.slice(-50))
+}
+
+function parseSourceMeta(value: unknown): RehearsalSourceMeta | null {
+  if (typeof value === 'undefined' || value === null) {
+    return null
+  }
+
+  try {
+    return assertRehearsalSourceMeta(value)
+  } catch {
+    return null
+  }
 }
 
 function hydrateStoredAnalysis(): AnalyzeResult | undefined {
@@ -200,6 +219,13 @@ function isStoredSimulationResult(value: unknown): value is ReviewSimulationCach
 
   if (!isRecord(request) || !isRecord(response)) {
     return false
+  }
+
+  const sourceMeta = parseSourceMeta(value.source_meta)
+  if (sourceMeta) {
+    value.source_meta = sourceMeta
+  } else if (typeof value.source_meta !== 'undefined') {
+    delete value.source_meta
   }
 
   return (
@@ -286,6 +312,26 @@ function buildRoommateNamesFromSimulation(
   return roommateNames
 }
 
+function buildRoommateSummaryFromNames(roommateNames: ReviewContext['roommateNames']) {
+  return Object.values(roommateNames)
+    .map((name) => name?.trim() ?? '')
+    .filter(Boolean)
+    .filter((name, index, source) => source.indexOf(name) === index)
+    .join('，')
+}
+
+function buildFallbackCustomSourceMeta(
+  scenario: string,
+  roommateNames: ReviewContext['roommateNames'] = {},
+): RehearsalSourceMeta {
+  const roommateSummary = buildRoommateSummaryFromNames(roommateNames)
+  return {
+    mode: 'custom_rehearsal',
+    scenario: scenario || '沟通复盘场景',
+    ...(roommateSummary ? { roommate_summary: roommateSummary } : {}),
+  }
+}
+
 function hydrateReviewContext(): ReviewContext {
   const analysis = hydrateStoredAnalysis()
   const lastEvent = hydrateStoredLastEvent()
@@ -293,6 +339,7 @@ function hydrateReviewContext(): ReviewContext {
   let conversationId: string | undefined
   let dialogue: ReviewDialogueLine[] = []
   let roommateNames: ReviewContext['roommateNames'] = {}
+  let sourceMeta: RehearsalSourceMeta | null = null
 
   try {
     const raw = localStorage.getItem(SIMULATION_RESULT_STORAGE_KEY)
@@ -303,6 +350,7 @@ function hydrateReviewContext(): ReviewContext {
         conversationId = parsed.response.conversation_id || parsed.request.conversation_id
         dialogue = buildDialogueFromSimulation(parsed)
         roommateNames = buildRoommateNamesFromSimulation(parsed)
+        sourceMeta = parsed.source_meta ?? buildFallbackCustomSourceMeta(scenario, roommateNames)
       }
     }
   } catch {
@@ -329,6 +377,7 @@ function hydrateReviewContext(): ReviewContext {
     dialogue,
     roommateNames,
     original_event: buildOriginalEvent(analysis, lastEvent),
+    sourceMeta,
   }
 }
 
@@ -359,9 +408,16 @@ const suggestionCards = computed<ReviewRewriteSuggestion[]>(() =>
 const activeReportKey = computed(
   () => activeReviewId.value ?? `current-${requestFingerprint(reviewRequest.value)}`,
 )
+const activeSourceMeta = computed(() => reviewSourceMeta.value ?? reviewRequest.value.source_meta ?? null)
 const currentReportRail = computed(() => ({
   scenario: currentReviewSnapshot.value?.request.scenario || reviewRequest.value.scenario,
   summary: currentReviewSnapshot.value?.response.summary || reviewResponse.value.summary,
+  sourceLabel: sourceCompactLabel(
+    currentReviewSnapshot.value?.sourceMeta ??
+      currentReviewSnapshot.value?.request.source_meta ??
+      activeSourceMeta.value,
+    currentReviewSnapshot.value?.request.scenario || reviewRequest.value.scenario,
+  ),
 }))
 const visibleReviewHistory = computed<ReviewReportSummary[]>(() => {
   const duplicateId = findCurrentReportDuplicateId()
@@ -379,6 +435,9 @@ const practiceMessage = computed(() => {
 
   return suggestionCards.value[0]?.suggested_message.trim() ?? ''
 })
+const reviewSourceRows = computed(() =>
+  buildReviewSourceRows(activeSourceMeta.value, reviewRequest.value.scenario),
+)
 const communicationPlanItems = computed(() => [
   {
     icon: 'waving_hand',
@@ -396,6 +455,51 @@ const communicationPlanItems = computed(() => [
     text: reviewResponse.value.communication_plan.fallback_plan,
   },
 ])
+
+function sourceModeLabel(sourceMeta: RehearsalSourceMeta | null | undefined) {
+  return sourceMeta?.mode === 'scenario_training' ? '场景训练' : '自定义演练'
+}
+
+function sourceCompactLabel(
+  sourceMeta: RehearsalSourceMeta | null | undefined,
+  fallbackScenario: string,
+) {
+  if (sourceMeta?.mode === 'scenario_training') {
+    return `场景训练 · ${sourceMeta.scenario_title}`
+  }
+
+  const scenario =
+    sourceMeta?.mode === 'custom_rehearsal' ? sourceMeta.scenario : fallbackScenario
+  return `自定义演练 · ${scenario || '沟通复盘场景'}`
+}
+
+function buildReviewSourceRows(
+  sourceMeta: RehearsalSourceMeta | null | undefined,
+  fallbackScenario: string,
+) {
+  if (sourceMeta?.mode === 'scenario_training') {
+    return [
+      { label: '复盘类型', value: '场景训练' },
+      { label: '训练场景', value: sourceMeta.scenario_title },
+      { label: '场景分类', value: sourceMeta.category_label },
+      { label: '训练目标', value: sourceMeta.target_label },
+      { label: '训练难度', value: sourceMeta.difficulty_label },
+    ]
+  }
+
+  const scenario =
+    sourceMeta?.mode === 'custom_rehearsal' ? sourceMeta.scenario : fallbackScenario
+  const rows = [
+    { label: '复盘类型', value: '自定义演练' },
+    { label: '自定义场景', value: scenario || '沟通复盘场景' },
+  ]
+
+  if (sourceMeta?.mode === 'custom_rehearsal' && sourceMeta.roommate_summary) {
+    rows.push({ label: '角色配置', value: sourceMeta.roommate_summary })
+  }
+
+  return rows
+}
 
 function normalizeReviewScore(value: number): number {
   if (!Number.isFinite(value)) {
@@ -613,8 +717,11 @@ function getModalFocusableElements(modalRef: HTMLElement | null) {
 }
 
 function createReviewSnapshot(): ReviewSnapshot {
+  const sourceMeta = activeSourceMeta.value
   return {
-    request: { ...reviewRequest.value },
+    request: sourceMeta
+      ? { ...reviewRequest.value, source_meta: sourceMeta }
+      : { ...reviewRequest.value },
     response: {
       ...reviewResponse.value,
       strengths: [...reviewResponse.value.strengths],
@@ -628,11 +735,15 @@ function createReviewSnapshot(): ReviewSnapshot {
     },
     dialogue: [...storedDialogue.value],
     roommateNames: { ...storedRoommateNames.value },
+    sourceMeta,
   }
 }
 
 function applyReviewSnapshot(snapshot: ReviewSnapshot, reviewId: string | null) {
-  reviewRequest.value = { ...snapshot.request }
+  const sourceMeta = snapshot.sourceMeta ?? snapshot.request.source_meta ?? null
+  reviewRequest.value = sourceMeta
+    ? { ...snapshot.request, source_meta: sourceMeta }
+    : { ...snapshot.request }
   reviewResponse.value = {
     ...snapshot.response,
     strengths: [...snapshot.response.strengths],
@@ -646,6 +757,7 @@ function applyReviewSnapshot(snapshot: ReviewSnapshot, reviewId: string | null) 
   }
   storedDialogue.value = [...snapshot.dialogue]
   storedRoommateNames.value = { ...snapshot.roommateNames }
+  reviewSourceMeta.value = sourceMeta
   activeReviewId.value = reviewId
   reviewExportError.value = ''
 }
@@ -672,11 +784,20 @@ function hasReviewableDialogue(dialogue: ReviewDialogueLine[]) {
 }
 
 function snapshotFromReportDetail(detail: ReviewReportDetail): ReviewSnapshot {
+  const sourceMeta =
+    detail.source_meta ??
+    detail.request.source_meta ??
+    buildFallbackCustomSourceMeta(detail.request.scenario, detail.request.roommate_names ?? {})
+  const request = sourceMeta
+    ? { ...detail.request, source_meta: sourceMeta }
+    : { ...detail.request }
+
   return {
-    request: detail.request,
+    request,
     response: detail.response,
     dialogue: dialogueFromReportDetail(detail),
     roommateNames: detail.request.roommate_names ?? {},
+    sourceMeta,
   }
 }
 
@@ -930,6 +1051,22 @@ function markdownDialogue() {
     .join('\n')
 }
 
+function markdownReviewSource() {
+  const sourceMeta = activeSourceMeta.value
+  const rows = buildReviewSourceRows(sourceMeta, reviewRequest.value.scenario)
+  const sourceLines = rows.map((row) => `- ${row.label}：${row.value}`)
+
+  if (sourceMeta?.mode === 'scenario_training' && sourceMeta.difficulty_description) {
+    sourceLines.push(`- 难度说明：${sourceMeta.difficulty_description}`)
+  }
+
+  if (!sourceMeta) {
+    sourceLines[0] = `- 复盘类型：${sourceModeLabel(sourceMeta)}`
+  }
+
+  return sourceLines.join('\n')
+}
+
 function buildReviewMarkdown() {
   const scores = reviewResponse.value.performance_scores
   const suggestionText = suggestionCards.value
@@ -945,6 +1082,9 @@ function buildReviewMarkdown() {
     ``,
     `## Scenario`,
     reviewRequest.value.scenario || '沟通复盘场景',
+    ``,
+    `## 复盘来源`,
+    markdownReviewSource(),
     ``,
     `## Dialogue`,
     markdownDialogue(),
@@ -1002,10 +1142,28 @@ function exportReviewMarkdown() {
 }
 
 function practiceAgain() {
+  const sourceMeta = activeSourceMeta.value
+  if (sourceMeta?.mode === 'scenario_training') {
+    void router.push({
+      name: 'scenario-training',
+      query: {
+        category: sourceMeta.category_id,
+        scenario: sourceMeta.scenario_id,
+        target: sourceMeta.target_id,
+        difficulty: sourceMeta.difficulty_id,
+        practice: practiceMessage.value,
+        from: 'review',
+      },
+    })
+    return
+  }
+
+  const scenario =
+    sourceMeta?.mode === 'custom_rehearsal' ? sourceMeta.scenario : reviewRequest.value.scenario
   void router.push({
-    name: 'simulate',
+    name: 'custom-rehearsal',
     query: {
-      scenario: reviewRequest.value.scenario,
+      scenario,
       practice: practiceMessage.value,
     },
   })
@@ -1020,12 +1178,15 @@ async function initReview() {
   const context = hydrateReviewContext()
   storedDialogue.value = context.dialogue
   storedRoommateNames.value = context.roommateNames
+  reviewSourceMeta.value =
+    context.sourceMeta ?? buildFallbackCustomSourceMeta(context.scenario, context.roommateNames)
   reviewRequest.value = {
     scenario: context.scenario,
     conversation_id: context.conversationId,
     dialogue: context.conversationId ? undefined : context.dialogue.slice(-50),
     roommate_names: context.roommateNames,
     original_event: context.original_event,
+    source_meta: reviewSourceMeta.value,
   }
 
   await loadReviewHistory()
@@ -1067,6 +1228,7 @@ async function initReview() {
         JSON.stringify({
           request: reviewRequest.value,
           response: result,
+          source_meta: reviewSourceMeta.value,
           dialogue_fingerprint: dialogueFingerprint(context.dialogue),
         }),
       )
@@ -1124,6 +1286,12 @@ onBeforeUnmount(() => {
             }}
           </p>
         </div>
+        <dl class="review-source-grid" aria-label="复盘来源">
+          <div v-for="row in reviewSourceRows" :key="row.label">
+            <dt>{{ row.label }}</dt>
+            <dd>{{ row.value }}</dd>
+          </div>
+        </dl>
       </section>
 
       <article class="review-dialogue-entry-card pop-card pop-shadow page-pop-in">
@@ -1188,7 +1356,7 @@ onBeforeUnmount(() => {
                   <span class="review-history-score">当前</span>
                   <span>
                     <strong>{{ currentReportRail.scenario || '当前复盘报告' }}</strong>
-                    <small>{{ currentReportRail.summary }}</small>
+                    <small>{{ currentReportRail.sourceLabel }} · {{ currentReportRail.summary }}</small>
                   </span>
                 </button>
               </article>
@@ -1208,7 +1376,11 @@ onBeforeUnmount(() => {
                   <span class="review-history-score">{{ reportAverageScore(report) }}</span>
                   <span>
                     <strong>{{ report.scenario }}</strong>
-                    <small>{{ formatReviewTime(report.created_at) }} · {{ report.summary }}</small>
+                    <small>
+                      {{ formatReviewTime(report.created_at) }} ·
+                      {{ sourceCompactLabel(report.source_meta, report.scenario) }} ·
+                      {{ report.summary }}
+                    </small>
                   </span>
                 </button>
                 <button
@@ -1253,6 +1425,15 @@ onBeforeUnmount(() => {
               class="review-result-stack review-report-export-surface"
             >
               <section class="review-v2-section">
+                <div class="review-source-summary pop-card pop-shadow">
+                  <span class="material-symbol" aria-hidden="true">flag</span>
+                  <dl class="review-source-grid">
+                    <div v-for="row in reviewSourceRows" :key="`summary-${row.label}`">
+                      <dt>{{ row.label }}</dt>
+                      <dd>{{ row.value }}</dd>
+                    </div>
+                  </dl>
+                </div>
                 <h2>表现总结</h2>
                 <p class="review-summary-inline pop-card pop-shadow">
                   {{ reviewResponse.summary }}
@@ -1524,6 +1705,66 @@ onBeforeUnmount(() => {
 .review-dialogue-entry-card .secondary-action {
   min-height: 42px;
   white-space: nowrap;
+}
+
+.review-source-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  gap: 10px;
+  min-width: min(100%, 460px);
+  margin: 0;
+}
+
+.review-source-grid > div {
+  min-width: 0;
+  border: 3px solid var(--ink);
+  border-radius: 12px;
+  background: var(--surface-container-low);
+  padding: 10px 12px;
+  box-shadow: 2px 2px 0 0 var(--shadow-dark);
+}
+
+.review-source-grid dt,
+.review-source-grid dd {
+  margin: 0;
+}
+
+.review-source-grid dt {
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+  font-weight: 900;
+}
+
+.review-source-grid dd {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.review-source-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+  border: 4px solid var(--ink);
+  background: var(--card);
+  padding: 14px;
+}
+
+.review-source-summary > .material-symbol {
+  display: inline-grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 3px solid var(--ink);
+  border-radius: 999px;
+  background: var(--secondary-soft);
+  box-shadow: 2px 2px 0 0 var(--shadow-dark);
+}
+
+.review-source-summary .review-source-grid {
+  min-width: 0;
 }
 
 .review-workspace {
@@ -1875,6 +2116,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 720px) {
   .review-dialogue-entry-card,
+  .review-source-summary,
   .review-plan-grid {
     grid-template-columns: 1fr;
   }
